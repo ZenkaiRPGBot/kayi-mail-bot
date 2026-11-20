@@ -5,7 +5,7 @@ from config import (
     DEFAULT_LIFETIME_MINUTES, EXTENSION_INCREMENT_MINUTES,
     MAX_TOTAL_LIFETIME_MINUTES, MAX_EXTENSIONS_PER_MAILBOX,
     RATE_LIMIT_COOLDOWN_SECONDS, HOURLY_CREATION_LIMIT, DAILY_CREATION_LIMIT,
-    INBOX_PAGE_SIZE
+    INBOX_PAGE_SIZE, IST
 )
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "kayimail.db")
@@ -215,7 +215,7 @@ async def extend_mailbox(user_id: int) -> tuple[bool, str, int]:
         """, (new_exp.isoformat(), box["id"]))
         await db.commit()
 
-    return True, new_exp.strftime("%H:%M UTC"), remaining_mins
+    return True, new_exp.astimezone(IST).strftime("%I:%M %p IST"), remaining_mins
 
 async def delete_mailbox(user_id: int) -> dict | None:
     box = await get_active_mailbox(user_id)

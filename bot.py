@@ -22,7 +22,8 @@ from config import (
     BRAND_NAME, COMMUNITY_URL, INBOX_PAGE_SIZE,
     INTERVAL_NEW_BOX, INTERVAL_VERIFY_WINDOW, INTERVAL_ACTIVE,
     INTERVAL_IDLE_15M, INTERVAL_IDLE_30M,
-    RENDER_EMAIL, RENDER_SERVICE_NAME, RENDER_REPO
+    RENDER_EMAIL, RENDER_SERVICE_NAME, RENDER_REPO,
+    IST
 )
 import database as db
 from mail_service import MailService, extract_verification_code, DEFAULT_DOMAIN, PROVIDERS
@@ -33,9 +34,11 @@ HTTP_SESSION: aiohttp.ClientSession | None = None
 mail_service: MailService | None = None
 
 def format_relative_time(iso_str: str) -> str:
-    """Formats ISO datetime string into readable relative or clock time."""
+    """Formats ISO datetime string into readable relative or IST clock time."""
     try:
         dt = datetime.fromisoformat(iso_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
         diff = (now - dt).total_seconds()
         if diff < 60:
@@ -43,8 +46,8 @@ def format_relative_time(iso_str: str) -> str:
         elif diff < 3600:
             return f"{int(diff // 60)}m ago"
         elif diff < 86400:
-            return dt.strftime("%H:%M UTC")
-        return dt.strftime("%b %d")
+            return dt.astimezone(IST).strftime("%I:%M %p IST")
+        return dt.astimezone(IST).strftime("%b %d, %I:%M %p IST")
     except Exception:
         return "recently"
 
@@ -324,7 +327,7 @@ async def send_restart_notification(bot: Bot):
             pass
 
     ping_ms = await measure_gateway_latency(bot)
-    now_str = datetime.now(timezone.utc).strftime("%H:%M:%S UTC · %b %d")
+    now_str = datetime.now(IST).strftime("%I:%M:%S %p IST · %b %d")
 
     if custom_reason:
         content = (

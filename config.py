@@ -1,10 +1,13 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
 
-BOT_START_TIME = datetime.now(timezone.utc)
+# Indian Standard Time (UTC + 05:30)
+IST = timezone(timedelta(hours=5, minutes=30))
+
+BOT_START_TIME = datetime.now(IST)
 
 # Telegram Credentials
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
