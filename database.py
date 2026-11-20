@@ -1,156 +1,370 @@
-import aiosqlite
 import os
+import aiosqlite
 from datetime import datetime, timezone, timedelta
-from config import MAILBOX_LIFETIME_MINUTES
+from config import (
+    DEFAULT_LIFETIME_MINUTES, EXTENSION_INCREMENT_MINUTES,
+    MAX_TOTAL_LIFETIME_MINUTES, MAX_EXTENSIONS_PER_MAILBOX,
+    RATE_LIMIT_COOLDOWN_SECONDS, HOURLY_CREATION_LIMIT, DAILY_CREATION_LIMIT,
+    INBOX_PAGE_SIZE
+)
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "kayimail.db")
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("PRAGMA journal_mode = WAL;")
+        await db.execute("PRAGMA busy_timeout = 5000;")
+        await db.execute("PRAGMA foreign_keys = ON;")
+
+        # Users table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                email TEXT,
-                token TEXT,
-                account_id TEXT,
-                created_at TIMESTAMP,
-                expires_at TIMESTAMP,
-                last_checked_msg_id TEXT DEFAULT '',
-                last_generated_at TIMESTAMP,
-                last_active_at TIMESTAMP,
-                is_active INTEGER DEFAULT 1
+                telegram_id INTEGER PRIMARY KEY,
+                created_at TIMESTAMP NOT NULL,
+                last_active_at TIMESTAMP NOT NULL
             )
         """)
+
+        # Mailboxes table
         await db.execute("""
-            CREATE TABLE IF NOT EXISTS received_messages (
-                msg_id TEXT PRIMARY KEY,
-                user_id INTEGER,
-                sender TEXT,
-                subject TEXT,
-                otp_code TEXT,
-                received_at TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+            CREATE TABLE IF NOT EXISTS mailboxes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                address TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                token TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL,
+                expires_at TIMESTAMP NOT NULL,
+                status TEXT DEFAULT 'active',
+                extension_count INTEGER DEFAULT 0,
+                last_polled_at TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (telegram_id) ON DELETE CASCADE
             )
         """)
+
+        # Messages table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mailbox_id INTEGER NOT NULL,
+                provider_message_id TEXT NOT NULL,
+                sender_address TEXT,
+                sender_name TEXT,
+                subject TEXT,
+                received_at TIMESTAMP NOT NULL,
+                is_read INTEGER DEFAULT 0,
+                notified_at TIMESTAMP,
+                otp_code TEXT,
+                body_text TEXT,
+                UNIQUE (mailbox_id, provider_message_id),
+                FOREIGN KEY (mailbox_id) REFERENCES mailboxes (id) ON DELETE CASCADE
+            )
+        """)
+
+        # Rate limits table (sliding window tracker)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS rate_limits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL
+            )
+        """)
+
+        # Performance Indexes
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_mailboxes_user_status ON mailboxes (user_id, status);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_mailboxes_expires ON mailboxes (expires_at, status);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_messages_mailbox ON messages (mailbox_id, id DESC);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_rate_limits_user ON rate_limits (user_id, action, created_at);")
+
         await db.commit()
 
-async def get_user_mailbox(user_id: int):
+async def touch_user(user_id: int):
+    now = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO users (telegram_id, created_at, last_active_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(telegram_id) DO UPDATE SET last_active_at = excluded.last_active_at
+        """, (user_id, now, now))
+        await db.commit()
+
+async def check_generation_limits(user_id: int) -> tuple[bool, str, int]:
+    """
+    Evaluates anti-abuse policies (Spec v1.0):
+    1. 60s minimum interval (monotonic cooldown)
+    2. 5 new addresses per rolling hour
+    3. 15 new addresses per rolling 24 hours
+    Returns (is_allowed, reason, seconds_remaining)
+    """
     now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    one_hour_ago = (now - timedelta(hours=1)).isoformat()
+    one_day_ago = (now - timedelta(days=1)).isoformat()
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        # 1. Check last generation for 60s cooldown
+        async with db.execute(
+            "SELECT created_at FROM rate_limits WHERE user_id = ? AND action = 'create_mailbox' ORDER BY id DESC LIMIT 1",
+            (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                last_dt = datetime.fromisoformat(row[0])
+                elapsed = (now - last_dt).total_seconds()
+                if elapsed < RATE_LIMIT_COOLDOWN_SECONDS:
+                    return False, "cooldown", int(RATE_LIMIT_COOLDOWN_SECONDS - elapsed)
+
+        # 2. Check rolling 1 hour limit (max 5)
+        async with db.execute(
+            "SELECT COUNT(*) FROM rate_limits WHERE user_id = ? AND action = 'create_mailbox' AND created_at > ?",
+            (user_id, one_hour_ago)
+        ) as cursor:
+            count_hour = (await cursor.fetchone())[0]
+            if count_hour >= HOURLY_CREATION_LIMIT:
+                return False, "hourly", 3600
+
+        # 3. Check rolling 24 hours limit (max 15)
+        async with db.execute(
+            "SELECT COUNT(*) FROM rate_limits WHERE user_id = ? AND action = 'create_mailbox' AND created_at > ?",
+            (user_id, one_day_ago)
+        ) as cursor:
+            count_day = (await cursor.fetchone())[0]
+            if count_day >= DAILY_CREATION_LIMIT:
+                return False, "daily", 86400
+
+    return True, "ok", 0
+
+async def get_active_mailbox(user_id: int) -> dict | None:
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)) as cursor:
+        async with db.execute(
+            "SELECT * FROM mailboxes WHERE user_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1",
+            (user_id,)
+        ) as cursor:
             row = await cursor.fetchone()
             if not row:
                 return None
-            
-            # Check if expired
-            if row["expires_at"]:
-                exp_dt = datetime.fromisoformat(row["expires_at"])
-                if exp_dt < now:
-                    # Mailbox expired
-                    await db.execute("UPDATE users SET is_active = 0 WHERE user_id = ?", (user_id,))
-                    await db.commit()
-                    return None
+
+            # Check expiration
+            exp_dt = datetime.fromisoformat(row["expires_at"])
+            if exp_dt <= now:
+                await db.execute("UPDATE mailboxes SET status = 'expired' WHERE id = ?", (row["id"],))
+                await db.commit()
+                return None
+
             return dict(row)
 
-async def can_generate_new(user_id: int, cooldown_seconds: int = 60) -> tuple[bool, int]:
+async def save_new_mailbox(user_id: int, address: str, token: str, account_id: str) -> dict:
     now = datetime.now(timezone.utc)
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT last_generated_at FROM users WHERE user_id = ?", (user_id,)) as cursor:
-            row = await cursor.fetchone()
-            if not row or not row[0]:
-                return True, 0
-            
-            last_gen = datetime.fromisoformat(row[0])
-            elapsed = (now - last_gen).total_seconds()
-            if elapsed < cooldown_seconds:
-                remaining = int(cooldown_seconds - elapsed)
-                return False, remaining
-            return True, 0
+    expires = now + timedelta(minutes=DEFAULT_LIFETIME_MINUTES)
+    now_iso = now.isoformat()
+    exp_iso = expires.isoformat()
 
-async def save_user_mailbox(user_id: int, email: str, token: str, account_id: str):
-    now = datetime.now(timezone.utc)
-    expires = now + timedelta(minutes=MAILBOX_LIFETIME_MINUTES)
-    
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            INSERT INTO users (user_id, email, token, account_id, created_at, expires_at, last_generated_at, last_active_at, is_active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
-            ON CONFLICT(user_id) DO UPDATE SET
-                email = excluded.email,
-                token = excluded.token,
-                account_id = excluded.account_id,
-                created_at = excluded.created_at,
-                expires_at = excluded.expires_at,
-                last_generated_at = excluded.last_generated_at,
-                last_active_at = excluded.last_active_at,
-                last_checked_msg_id = '',
-                is_active = 1
-        """, (user_id, email, token, account_id, now.isoformat(), expires.isoformat(), now.isoformat(), now.isoformat()))
-        await db.commit()
-
-async def extend_mailbox(user_id: int, extra_minutes: int = 30) -> bool:
-    now = datetime.now(timezone.utc)
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT expires_at FROM users WHERE user_id = ? AND is_active = 1", (user_id,)) as cursor:
-            row = await cursor.fetchone()
-            if not row or not row["expires_at"]:
-                return False
-            
-            current_exp = datetime.fromisoformat(row["expires_at"])
-            base = max(current_exp, now)
-            new_exp = base + timedelta(minutes=extra_minutes)
-            
-            await db.execute("UPDATE users SET expires_at = ?, last_active_at = ? WHERE user_id = ?",
-                             (new_exp.isoformat(), now.isoformat(), user_id))
+        # Ensure user exists
+        await db.execute("""
+            INSERT INTO users (telegram_id, created_at, last_active_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(telegram_id) DO UPDATE SET last_active_at = excluded.last_active_at
+        """, (user_id, now_iso, now_iso))
+
+        # Retire any previous active mailbox safely
+        await db.execute("UPDATE mailboxes SET status = 'replaced' WHERE user_id = ? AND status = 'active'", (user_id,))
+
+        # Insert new mailbox
+        cursor = await db.execute("""
+            INSERT INTO mailboxes (user_id, address, account_id, token, created_at, expires_at, status, extension_count)
+            VALUES (?, ?, ?, ?, ?, ?, 'active', 0)
+        """, (user_id, address, token, account_id, now_iso, exp_iso))
+        box_id = cursor.lastrowid
+
+        # Record in rate limits
+        await db.execute("INSERT INTO rate_limits (user_id, action, created_at) VALUES (?, 'create_mailbox', ?)",
+                         (user_id, now_iso))
+
+        await db.commit()
+
+        async with db.execute("SELECT * FROM mailboxes WHERE id = ?", (box_id,)) as cur:
+            return dict(await cur.fetchone())
+
+async def extend_mailbox(user_id: int) -> tuple[bool, str, int]:
+    """
+    Extends active mailbox by +30m.
+    Rules: Max 2 extensions, max total lifetime 120m from creation.
+    Returns (success, reason_or_expiry_iso, remaining_minutes)
+    """
+    now = datetime.now(timezone.utc)
+    box = await get_active_mailbox(user_id)
+    if not box:
+        return False, "expired", 0
+
+    if box["extension_count"] >= MAX_EXTENSIONS_PER_MAILBOX:
+        return False, "max_extensions_reached", 0
+
+    created_dt = datetime.fromisoformat(box["created_at"])
+    curr_exp = datetime.fromisoformat(box["expires_at"])
+    max_allowed_exp = created_dt + timedelta(minutes=MAX_TOTAL_LIFETIME_MINUTES)
+
+    # Base extension from max of now or curr_exp
+    base = max(curr_exp, now)
+    proposed_exp = base + timedelta(minutes=EXTENSION_INCREMENT_MINUTES)
+    new_exp = min(proposed_exp, max_allowed_exp)
+
+    if new_exp <= curr_exp:
+        return False, "max_lifetime_reached", 0
+
+    remaining_mins = max(1, int((new_exp - now).total_seconds() // 60))
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            UPDATE mailboxes 
+            SET expires_at = ?, extension_count = extension_count + 1 
+            WHERE id = ?
+        """, (new_exp.isoformat(), box["id"]))
+        await db.commit()
+
+    return True, new_exp.strftime("%H:%M UTC"), remaining_mins
+
+async def delete_mailbox(user_id: int) -> dict | None:
+    box = await get_active_mailbox(user_id)
+    if not box:
+        return None
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE mailboxes SET status = 'deleted' WHERE id = ?", (box["id"],))
+        await db.commit()
+
+    return box
+
+async def is_message_recorded(mailbox_id: int, provider_message_id: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT 1 FROM messages WHERE mailbox_id = ? AND provider_message_id = ?",
+            (mailbox_id, provider_message_id)
+        ) as cursor:
+            return (await cursor.fetchone()) is not None
+
+async def save_incoming_message(
+    mailbox_id: int, provider_message_id: str, sender_address: str, sender_name: str,
+    subject: str, received_at: str, otp_code: str | None, body_text: str
+) -> int:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            INSERT OR IGNORE INTO messages 
+            (mailbox_id, provider_message_id, sender_address, sender_name, subject, received_at, notified_at, otp_code, body_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (mailbox_id, provider_message_id, sender_address, sender_name, subject, received_at, now_iso, otp_code, body_text))
+        await db.commit()
+        return cursor.lastrowid
+
+async def get_mailbox_messages(mailbox_id: int, page: int = 0, page_size: int = INBOX_PAGE_SIZE) -> tuple[list[dict], int]:
+    offset = page * page_size
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        # Total count
+        async with db.execute("SELECT COUNT(*) FROM messages WHERE mailbox_id = ?", (mailbox_id,)) as cur:
+            total = (await cur.fetchone())[0]
+
+        async with db.execute("""
+            SELECT id, sender_name, sender_address, subject, received_at, otp_code, is_read
+            FROM messages 
+            WHERE mailbox_id = ? 
+            ORDER BY id DESC 
+            LIMIT ? OFFSET ?
+        """, (mailbox_id, page_size, offset)) as cur:
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows], total
+
+async def get_unread_count(mailbox_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM messages WHERE mailbox_id = ? AND is_read = 0",
+            (mailbox_id,)
+        ) as cursor:
+            return (await cursor.fetchone())[0]
+
+async def get_message_detail(local_id: int, user_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        # Verify user ownership via JOIN with mailboxes
+        query = """
+            SELECT m.*, b.user_id, b.address as mailbox_address
+            FROM messages m
+            JOIN mailboxes b ON m.mailbox_id = b.id
+            WHERE m.id = ? AND b.user_id = ?
+        """
+        async with db.execute(query, (local_id, user_id)) as cur:
+            row = await cur.fetchone()
+            if not row:
+                return None
+            # Mark read
+            await db.execute("UPDATE messages SET is_read = 1 WHERE id = ?", (local_id,))
             await db.commit()
-            return True
+            return dict(row)
 
-async def delete_user_mailbox(user_id: int):
+async def get_adjacent_message_ids(local_id: int, mailbox_id: int) -> tuple[int | None, int | None]:
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET is_active = 0, email = NULL, token = NULL, account_id = NULL WHERE user_id = ?", (user_id,))
-        await db.commit()
+        # Previous (older message, lower ID)
+        async with db.execute(
+            "SELECT id FROM messages WHERE mailbox_id = ? AND id < ? ORDER BY id DESC LIMIT 1",
+            (mailbox_id, local_id)
+        ) as cur:
+            prev_row = await cur.fetchone()
+            prev_id = prev_row[0] if prev_row else None
 
-async def touch_user_activity(user_id: int):
-    now = datetime.now(timezone.utc)
+        # Next (newer message, higher ID)
+        async with db.execute(
+            "SELECT id FROM messages WHERE mailbox_id = ? AND id > ? ORDER BY id ASC LIMIT 1",
+            (mailbox_id, local_id)
+        ) as cur:
+            next_row = await cur.fetchone()
+            next_id = next_row[0] if next_row else None
+
+        return prev_id, next_id
+
+async def delete_message(local_id: int, user_id: int) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET last_active_at = ? WHERE user_id = ?", (now.isoformat(), user_id))
-        await db.commit()
+        # Check ownership
+        async with db.execute("""
+            SELECT m.id FROM messages m
+            JOIN mailboxes b ON m.mailbox_id = b.id
+            WHERE m.id = ? AND b.user_id = ?
+        """, (local_id, user_id)) as cur:
+            if not await cur.fetchone():
+                return False
 
-async def get_active_mailboxes():
-    """Returns all non-expired, active mailboxes that were active within the last 15 minutes."""
+        await db.execute("DELETE FROM messages WHERE id = ?", (local_id,))
+        await db.commit()
+        return True
+
+async def get_mailboxes_for_monitoring() -> list[dict]:
+    """
+    Returns active mailboxes with mailbox age and user idle time for adaptive scheduling.
+    """
     now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(minutes=15)
-    
+    now_iso = now.isoformat()
+
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         query = """
-            SELECT * FROM users 
-            WHERE is_active = 1 
-              AND email IS NOT NULL 
-              AND expires_at > ? 
-              AND last_active_at > ?
+            SELECT b.id, b.user_id, b.address, b.token, b.created_at, b.expires_at, 
+                   b.last_polled_at, u.last_active_at
+            FROM mailboxes b
+            JOIN users u ON b.user_id = u.telegram_id
+            WHERE b.status = 'active' AND b.expires_at > ?
         """
-        async with db.execute(query, (now.isoformat(), cutoff.isoformat())) as cursor:
-            rows = await cursor.fetchall()
+        async with db.execute(query, (now_iso,)) as cur:
+            rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
-async def update_last_checked_msg(user_id: int, msg_id: str):
+async def update_mailbox_polled_time(mailbox_id: int):
+    now_iso = datetime.now(timezone.utc).isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET last_checked_msg_id = ? WHERE user_id = ?", (msg_id, user_id))
-        await db.commit()
-
-async def is_message_recorded(msg_id: str) -> bool:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT 1 FROM received_messages WHERE msg_id = ?", (msg_id,)) as cursor:
-            return (await cursor.fetchone()) is not None
-
-async def record_message(msg_id: str, user_id: int, sender: str, subject: str, otp_code: str | None):
-    now = datetime.now(timezone.utc)
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            INSERT OR IGNORE INTO received_messages (msg_id, user_id, sender, subject, otp_code, received_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (msg_id, user_id, sender, subject, otp_code, now.isoformat()))
+        await db.execute("UPDATE mailboxes SET last_polled_at = ? WHERE id = ?", (now_iso, mailbox_id))
         await db.commit()
