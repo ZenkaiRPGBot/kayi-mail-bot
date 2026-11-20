@@ -310,55 +310,58 @@ async def register_bot_commands(bot: Bot):
     except Exception as e:
         print(f"[commands] Failed to register commands: {e}")
 
-async def send_restart_notification(bot: Bot):
-    """Notifies owner and log channel upon startup with clean Apple-inspired layout."""
-    if not OWNER_ID:
-        return
-
+def get_latest_changes() -> list[str]:
+    """Retrieves recent changes from restart_reason.txt, git commit log, or fallback."""
     reason_file = os.path.join(os.path.dirname(__file__), "restart_reason.txt")
-    custom_reason = None
     if os.path.exists(reason_file):
         try:
             with open(reason_file, "r", encoding="utf-8") as f:
-                custom_reason = f.read().strip()
+                content = f.read().strip()
             os.remove(reason_file)
+            if content:
+                return [line.strip("-•* ").strip() for line in content.splitlines() if line.strip()]
         except Exception:
             pass
 
-    ping_ms = await measure_gateway_latency(bot)
-    now_str = datetime.now(IST).strftime("%I:%M:%S %p IST · %b %d")
+    try:
+        import subprocess
+        raw = subprocess.check_output(
+            ["git", "log", "-1", "--pretty=%s%n%b"],
+            text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        lines = [l.strip("-•* ").strip() for l in raw.splitlines() if l.strip()]
+        cleaned = []
+        for line in lines:
+            for prefix in ["feat:", "fix:", "chore:", "refactor:", "perf:", "docs:", "style:", "test:"]:
+                if line.lower().startswith(prefix):
+                    line = line[len(prefix):].strip()
+                    break
+            if line and len(line) > 3 and not line.startswith("Co-authored-by:") and not line.startswith("Signed-off-by:"):
+                cleaned.append(line[0].upper() + line[1:])
+            if len(cleaned) >= 3:
+                break
+        if cleaned:
+            return cleaned
+    except Exception:
+        pass
 
-    if custom_reason:
-        content = (
-            f"<b>{BRAND_NAME} · System Restart</b>\n\n"
-            f"<b>Status:</b> 🟢 Online\n"
-            f"<b>Cluster:</b> Frankfurt (EU-Central)\n"
-            f"<b>Gateway Ping:</b> <code>{ping_ms:.1f} ms</code>\n"
-            f"<b>Timestamp:</b> <code>{now_str}</code>\n\n"
-            f"<blockquote><b>Restart Reason</b>\n{html.escape(custom_reason)}</blockquote>\n\n"
-            "<i>All services operational and monitoring active.</i>"
-        )
-    else:
-        content = (
-            f"<b>{BRAND_NAME} · System Restart</b>\n\n"
-            f"<b>Status:</b> 🟢 Online\n"
-            f"<b>Cluster:</b> Frankfurt (EU-Central)\n"
-            f"<b>Gateway Ping:</b> <code>{ping_ms:.1f} ms</code>\n"
-            f"<b>Timestamp:</b> <code>{now_str}</code>\n\n"
-            "<blockquote><b>What's New in this Build</b>\n"
-            "• <b>Ultra-Low Latency:</b> Persistent TCP keep-alive socket\n"
-            "• <b>Resource Monitor:</b> New /usage & /render stats command\n"
-            "• <b>Multi-Bot Ready:</b> Unified hosting metrics card for groups\n"
-            "• <b>Streamlined UI:</b> Clean typography and button hierarchy</blockquote>\n\n"
-            "<i>Ready to process incoming emails and verification codes.</i>"
-        )
+    return ["Bug fixes and performance improvements"]
 
-    markup = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="Check Ping", callback_data="ping:refresh", style="primary"),
-            InlineKeyboardButton(text="Service Usage", callback_data="usage:refresh", style="success")
-        ]
-    ])
+async def send_restart_notification(bot: Bot):
+    """Notifies owner and log channel upon startup with clean, non-technical layout and zero buttons."""
+    if not OWNER_ID:
+        return
+
+    changes = get_latest_changes()
+    changes_formatted = "\n".join(f"• {html.escape(c)}" for c in changes)
+    now_str = datetime.now(IST).strftime("%I:%M %p IST · %b %d")
+
+    content = (
+        f"<b>{BRAND_NAME} Online 🟢</b>\n\n"
+        "<b>Changes in this Update:</b>\n"
+        f"{changes_formatted}\n\n"
+        f"<b>Time:</b> <code>{now_str}</code>"
+    )
 
     targets = [OWNER_ID]
     if LOG_CHANNEL_ID:
@@ -369,8 +372,8 @@ async def send_restart_notification(bot: Bot):
 
     for chat_id in set(targets):
         try:
-            await bot.send_message(chat_id=chat_id, text=content, parse_mode=ParseMode.HTML, reply_markup=markup)
-            print(f"[restart] Sent restart notification to {chat_id}")
+            await bot.send_message(chat_id=chat_id, text=content, parse_mode=ParseMode.HTML)
+            print(f"[restart] Sent clean restart notification to {chat_id}")
         except Exception as e:
             print(f"[restart] Could not notify {chat_id}: {e}")
 
@@ -448,24 +451,17 @@ async def cmd_new(message: types.Message):
 @dp.message(Command("ping"))
 async def cmd_ping(message: types.Message, bot: Bot):
     latency_ms = await measure_gateway_latency(bot)
-    uptime_sec = int((datetime.now(timezone.utc) - BOT_START_TIME).total_seconds())
+    uptime_sec = int((datetime.now(IST) - BOT_START_TIME).total_seconds())
     hours, rem = divmod(uptime_sec, 3600)
     mins, secs = divmod(rem, 60)
     uptime_str = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s"
 
-    markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Refresh Ping", callback_data="ping:refresh", style="primary")],
-        [InlineKeyboardButton(text="Service Usage", callback_data="usage:show", style="success")]
-    ])
-
     text = (
         "<b>Pong!</b> ⚡\n\n"
-        f"<b>Gateway Latency:</b> <code>{latency_ms:.1f} ms</code>\n"
-        f"<b>Server Region:</b> <code>Frankfurt (EU)</code>\n"
-        f"<b>Uptime:</b> <code>{uptime_str}</code>\n\n"
-        "<i>Optimized TCP keep-alive connection to Telegram edge.</i>"
+        f"<b>Latency:</b> <code>{latency_ms:.1f} ms</code>\n\n"
+        f"<b>Uptime:</b> <code>{uptime_str}</code>"
     )
-    await message.reply(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    await message.reply(text, parse_mode=ParseMode.HTML)
 
 @dp.message(Command("usage"))
 @dp.message(Command("render"))
