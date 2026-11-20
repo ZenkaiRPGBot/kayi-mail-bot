@@ -54,3 +54,4 @@ if not PING_URL and os.getenv("RENDER"):
 RENDER_EMAIL = os.getenv("RENDER_EMAIL", "giyanrtjd@gmail.com")
 RENDER_SERVICE_NAME = os.getenv("RENDER_SERVICE_NAME", "kayi-mail-bot")
 RENDER_REPO = "ZenkaiRPGBot/kayi-mail-bot"
+RENDER_USED_HOURS = float(os.getenv("RENDER_USED_HOURS", "0.0"))

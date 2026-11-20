@@ -23,7 +23,7 @@ from config import (
     INTERVAL_NEW_BOX, INTERVAL_VERIFY_WINDOW, INTERVAL_ACTIVE,
     INTERVAL_IDLE_15M, INTERVAL_IDLE_30M,
     RENDER_EMAIL, RENDER_SERVICE_NAME, RENDER_REPO,
-    IST
+    RENDER_USED_HOURS, IST
 )
 import database as db
 from mail_service import MailService, extract_verification_code, DEFAULT_DOMAIN, PROVIDERS
@@ -247,23 +247,21 @@ async def render_home_card(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
 
 async def build_usage_card_text(bot: Bot) -> tuple[str, InlineKeyboardMarkup]:
     """Generates unified hosting, Render free tier usage, and bot activity card."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(IST)
     uptime_sec = int((now - BOT_START_TIME).total_seconds())
     hours, rem = divmod(uptime_sec, 3600)
     mins, secs = divmod(rem, 60)
     uptime_str = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s"
 
-    # Monthly free tier calculations (Render gives 750 free hours/month)
-    month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-    month_elapsed_h = max(0.1, (now - month_start).total_seconds() / 3600.0)
-    est_hours = min(month_elapsed_h, 750.0)
-    used_pct = min(100.0, (est_hours / 750.0) * 100.0)
+    # Calculate live accurate usage from baseline RENDER_USED_HOURS + live session hours
+    session_hours = (now - BOT_START_TIME).total_seconds() / 3600.0
+    total_used_hours = min(750.0, RENDER_USED_HOURS + session_hours)
+    remaining_hours = max(0.0, 750.0 - total_used_hours)
+    used_pct = min(100.0, (total_used_hours / 750.0) * 100.0)
+    days_left_capacity = remaining_hours / 24.0
 
-    # Memory RAM usage (Render free gives 512 MB)
     mem_mb = get_process_memory_mb()
     mem_pct = min(100.0, (mem_mb / 512.0) * 100.0)
-
-    # Real warm gateway latency
     ping_ms = await measure_gateway_latency(bot)
 
     # Database metrics
@@ -278,7 +276,8 @@ async def build_usage_card_text(bot: Bot) -> tuple[str, InlineKeyboardMarkup]:
         f"• <b>Repository:</b> <code>{html.escape(RENDER_REPO)}</code>\n\n"
         "<b>Monthly Free Usage (Render Limit: 750h):</b>\n"
         f"• <b>Active Uptime:</b> <code>{uptime_str}</code>\n"
-        f"• <b>Hours This Month:</b> <code>~{est_hours:.1f}h / 750h ({used_pct:.1f}%)</code>\n"
+        f"• <b>Hours This Month:</b> <code>{total_used_hours:.1f}h / 750h ({used_pct:.1f}%)</code>\n"
+        f"• <b>Remaining Free:</b> <code>{remaining_hours:.1f}h (~{days_left_capacity:.1f} days)</code>\n"
         f"• <b>Memory (RAM):</b> <code>{mem_mb:.1f} MB / 512 MB ({mem_pct:.1f}%)</code>\n\n"
         "<b>Bot Metrics:</b>\n"
         f"• <b>Active Inboxes:</b> <code>{active_boxes}</code>\n"
