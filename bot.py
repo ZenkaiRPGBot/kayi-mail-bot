@@ -1017,15 +1017,7 @@ async def main():
     print(f"Launching {BRAND_NAME} Bot (Spec v1.0)...")
     await db.init_db()
 
-    # Optimized persistent connection pool with DNS caching & keep-alive
-    bot_connector = aiohttp.TCPConnector(
-        limit=100,
-        keepalive_timeout=75,
-        ttl_dns_cache=600,
-        enable_cleanup_closed=True
-    )
-    bot_session = AiohttpSession(connector=bot_connector)
-    bot = Bot(token=BOT_TOKEN, session=bot_session)
+    bot = Bot(token=BOT_TOKEN)
 
     connector = aiohttp.TCPConnector(limit=50, ttl_dns_cache=300, enable_cleanup_closed=True)
     HTTP_SESSION = aiohttp.ClientSession(connector=connector)
