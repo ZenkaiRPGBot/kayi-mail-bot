@@ -44,3 +44,5 @@ INTERVAL_IDLE_30M = 120                # 30+ minutes idle: infrequent check (120
 # Web server for keep-alive
 PORT = int(os.getenv("PORT", "8080"))
 PING_URL = os.getenv("PING_URL") or os.getenv("RENDER_EXTERNAL_URL")
+if not PING_URL and os.getenv("RENDER"):
+    PING_URL = "https://kayi-mail-bot.onrender.com"

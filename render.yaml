@@ -9,6 +9,6 @@ services:
       - key: BOT_TOKEN
         sync: false
       - key: PING_URL
-        sync: false
+        value: "https://kayi-mail-bot.onrender.com"
       - key: OWNER_ID
         value: "986380678"
