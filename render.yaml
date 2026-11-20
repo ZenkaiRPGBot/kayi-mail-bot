@@ -16,7 +16,7 @@ services:
       - key: LOG_CHANNEL_ID
         value: "-1004495645007"
       - key: RENDER_EMAIL
-        value: "giyanrtjd@gmail.com"
+        value: "2305101270081@paruluniversity.ac.in"
       - key: RENDER_SERVICE_NAME
         value: "kayi-mail-bot"
       - key: PYTHONUNBUFFERED

@@ -51,7 +51,7 @@ if not PING_URL and os.getenv("RENDER"):
     PING_URL = "https://kayi-mail-bot.onrender.com"
 
 # Render Cloud Hosting Metadata
-RENDER_EMAIL = os.getenv("RENDER_EMAIL", "giyanrtjd@gmail.com")
+RENDER_EMAIL = os.getenv("RENDER_EMAIL", "2305101270081@paruluniversity.ac.in")
 RENDER_SERVICE_NAME = os.getenv("RENDER_SERVICE_NAME", "kayi-mail-bot")
 RENDER_REPO = "ZenkaiRPGBot/kayi-mail-bot"
 RENDER_USED_HOURS = float(os.getenv("RENDER_USED_HOURS", "0.0"))
