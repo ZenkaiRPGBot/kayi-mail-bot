@@ -223,13 +223,63 @@ async def register_bot_commands(bot: Bot):
         BotCommand(command="start", description="Open your temporary inbox"),
         BotCommand(command="mail", description="View current address & inbox"),
         BotCommand(command="inbox", description="View received messages"),
-        BotCommand(command="new", description="Create a new temporary address")
+        BotCommand(command="new", description="Create a new temporary address"),
+        BotCommand(command="ping", description="Check bot latency and uptime")
     ]
     try:
         await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
         print("[commands] Registered official Telegram bot commands.")
     except Exception as e:
         print(f"[commands] Failed to register commands: {e}")
+
+async def send_restart_notification(bot: Bot):
+    """Notifies owner and log channel upon startup with exact changes or restart reason."""
+    if not OWNER_ID:
+        return
+
+    reason_file = os.path.join(os.path.dirname(__file__), "restart_reason.txt")
+    custom_reason = None
+    if os.path.exists(reason_file):
+        try:
+            with open(reason_file, "r", encoding="utf-8") as f:
+                custom_reason = f.read().strip()
+            os.remove(reason_file)
+        except Exception:
+            pass
+
+    if custom_reason:
+        content = (
+            "<b>Bot Restart Complete</b>\n\n"
+            f"<b>Reason:</b> {html.escape(custom_reason)}\n"
+            f"<b>Time:</b> <code>{datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}</code>"
+        )
+    else:
+        content = (
+            "<b>Bot Restart Complete</b>\n\n"
+            "<b>Changes & Updates:</b>\n"
+            "• Added /ping latency & uptime command\n"
+            "• Added restart notification & /restart owner command\n"
+            "• Cleaned button labels (removed emojis from address/refresh)\n"
+            "• Balanced button color hierarchy across all views\n"
+            "• Multi-provider engine (sharklasers.com, fexpost.com, mail.tm)\n"
+            "• Fixed Mail.tm JWT auth (no 429 rate limits)\n"
+            "• Configured Frankfurt low-latency deployment\n\n"
+            f"<b>Time:</b> <code>{datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}</code>"
+        )
+
+    targets = [OWNER_ID]
+    if LOG_CHANNEL_ID:
+        try:
+            targets.append(int(LOG_CHANNEL_ID))
+        except ValueError:
+            pass
+
+    for chat_id in set(targets):
+        try:
+            await bot.send_message(chat_id=chat_id, text=content, parse_mode=ParseMode.HTML)
+            print(f"[restart] Sent restart notification to {chat_id}")
+        except Exception as e:
+            print(f"[restart] Could not notify {chat_id}: {e}")
 
 # ==============================================================================
 # COMMAND HANDLERS
@@ -301,6 +351,49 @@ async def cmd_new(message: types.Message):
         parse_mode=ParseMode.HTML,
         reply_markup=markup
     )
+
+@dp.message(Command("ping"))
+async def cmd_ping(message: types.Message, bot: Bot):
+    t0 = time.perf_counter()
+    ping_msg = await message.reply("<b>Pinging...</b>", parse_mode=ParseMode.HTML)
+    latency_ms = (time.perf_counter() - t0) * 1000
+
+    uptime_sec = int((datetime.now(timezone.utc) - BOT_START_TIME).total_seconds())
+    hours, rem = divmod(uptime_sec, 3600)
+    mins, secs = divmod(rem, 60)
+    uptime_str = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s"
+
+    text = (
+        "<b>Pong!</b> ⚡\n\n"
+        f"<b>Latency:</b> <code>{latency_ms:.1f} ms</code>\n"
+        f"<b>Uptime:</b> <code>{uptime_str}</code>"
+    )
+    try:
+        await ping_msg.edit_text(text, parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+
+@dp.message(Command("restart"))
+async def cmd_restart(message: types.Message, bot: Bot):
+    if message.from_user.id != OWNER_ID:
+        await message.reply("Access denied. Owner only.")
+        return
+
+    reason = message.text.partition(" ")[2].strip() or "Manual owner restart"
+    reason_file = os.path.join(os.path.dirname(__file__), "restart_reason.txt")
+    try:
+        with open(reason_file, "w", encoding="utf-8") as f:
+            f.write(reason)
+    except Exception:
+        pass
+
+    await message.reply(f"<b>Restarting bot...</b>\n<i>Reason: {html.escape(reason)}</i>", parse_mode=ParseMode.HTML)
+    print(f"[bot] Owner initiated restart. Reason: {reason}")
+
+    if HTTP_SESSION and not HTTP_SESSION.closed:
+        await HTTP_SESSION.close()
+    await bot.session.close()
+    os.execv(sys.executable, [sys.executable] + sys.argv)
 
 # ==============================================================================
 # CALLBACK QUERY HANDLERS
@@ -796,6 +889,9 @@ async def main():
 
     # Register Telegram slash commands & menu button
     await register_bot_commands(bot)
+
+    # Dispatch restart notification with updates/reason
+    await send_restart_notification(bot)
 
     # Launch background adaptive polling scheduler
     asyncio.create_task(auto_email_listener_loop(bot))
