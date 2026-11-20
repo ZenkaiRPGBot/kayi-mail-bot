@@ -46,3 +46,8 @@ PORT = int(os.getenv("PORT", "8080"))
 PING_URL = os.getenv("PING_URL") or os.getenv("RENDER_EXTERNAL_URL")
 if not PING_URL and os.getenv("RENDER"):
     PING_URL = "https://kayi-mail-bot.onrender.com"
+
+# Render Cloud Hosting Metadata
+RENDER_EMAIL = os.getenv("RENDER_EMAIL", "giyanrtjd@gmail.com")
+RENDER_SERVICE_NAME = os.getenv("RENDER_SERVICE_NAME", "kayi-mail-bot")
+RENDER_REPO = "ZenkaiRPGBot/kayi-mail-bot"

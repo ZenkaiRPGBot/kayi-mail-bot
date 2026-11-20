@@ -344,3 +344,13 @@ async def update_mailbox_polled_time(mailbox_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE mailboxes SET last_polled_at = ? WHERE id = ?", (now_iso, mailbox_id))
         await db.commit()
+
+async def get_system_counts() -> tuple[int, int]:
+    """Returns (active_mailboxes_count, total_messages_count)."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM mailboxes WHERE status = 'active' AND expires_at > ?", (now_iso,)) as cur:
+            active_boxes = (await cur.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM messages") as cur:
+            total_msgs = (await cur.fetchone())[0]
+        return active_boxes, total_msgs
