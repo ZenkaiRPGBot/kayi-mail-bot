@@ -354,3 +354,35 @@ async def get_system_counts() -> tuple[int, int]:
         async with db.execute("SELECT COUNT(*) FROM messages") as cur:
             total_msgs = (await cur.fetchone())[0]
         return active_boxes, total_msgs
+
+async def get_bot_statistics() -> dict:
+    """Returns comprehensive non-technical user & delivery statistics for owner."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        # Total unique users
+        async with db.execute("SELECT COUNT(*) FROM users") as cur:
+            total_users = (await cur.fetchone())[0]
+
+        # Total mailboxes created
+        async with db.execute("SELECT COUNT(*) FROM mailboxes") as cur:
+            total_mailboxes = (await cur.fetchone())[0]
+
+        # Active mailboxes right now
+        async with db.execute("SELECT COUNT(*) FROM mailboxes WHERE status = 'active' AND expires_at > ?", (now_iso,)) as cur:
+            active_mailboxes = (await cur.fetchone())[0]
+
+        # Total emails received
+        async with db.execute("SELECT COUNT(*) FROM messages") as cur:
+            total_messages = (await cur.fetchone())[0]
+
+        # Verification codes captured
+        async with db.execute("SELECT COUNT(*) FROM messages WHERE otp_code IS NOT NULL AND otp_code != ''") as cur:
+            total_otps = (await cur.fetchone())[0]
+
+        return {
+            "total_users": total_users,
+            "total_mailboxes": total_mailboxes,
+            "active_mailboxes": active_mailboxes,
+            "total_messages": total_messages,
+            "total_otps": total_otps
+        }

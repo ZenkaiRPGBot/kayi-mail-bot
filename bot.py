@@ -12,7 +12,7 @@ from aiogram.filters import Command
 from aiogram.enums import ParseMode
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton, CopyTextButton,
-    BotCommand, BotCommandScopeDefault
+    BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 )
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
@@ -296,16 +296,24 @@ async def build_usage_card_text(bot: Bot) -> tuple[str, InlineKeyboardMarkup]:
 
 async def register_bot_commands(bot: Bot):
     """Registers official commands into Telegram's menu button and slash command autocompletion."""
-    commands = [
+    public_commands = [
         BotCommand(command="start", description="Open your temporary inbox"),
         BotCommand(command="mail", description="View current address & inbox"),
         BotCommand(command="inbox", description="View received messages"),
         BotCommand(command="new", description="Create a new temporary address"),
-        BotCommand(command="ping", description="Check bot latency and uptime"),
-        BotCommand(command="usage", description="Render hosting & account usage")
+        BotCommand(command="ping", description="Check bot latency and uptime")
+    ]
+    owner_commands = public_commands + [
+        BotCommand(command="stats", description="Bot users & service stats (Owner)"),
+        BotCommand(command="usage", description="Render hosting & account usage (Owner)")
     ]
     try:
-        await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+        await bot.set_my_commands(public_commands, scope=BotCommandScopeDefault())
+        if OWNER_ID:
+            try:
+                await bot.set_my_commands(owner_commands, scope=BotCommandScopeChat(chat_id=OWNER_ID))
+            except Exception:
+                pass
         print("[commands] Registered official Telegram bot commands.")
     except Exception as e:
         print(f"[commands] Failed to register commands: {e}")
@@ -463,10 +471,39 @@ async def cmd_ping(message: types.Message, bot: Bot):
     )
     await message.reply(text, parse_mode=ParseMode.HTML)
 
+@dp.message(Command("stats"))
+async def cmd_stats(message: types.Message, bot: Bot):
+    if message.from_user.id != OWNER_ID:
+        await message.reply("Access restricted to bot owner.")
+        return
+
+    stats = await db.get_bot_statistics()
+    uptime_sec = int((datetime.now(IST) - BOT_START_TIME).total_seconds())
+    hours, rem = divmod(uptime_sec, 3600)
+    mins, secs = divmod(rem, 60)
+    uptime_str = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s"
+
+    text = (
+        "<b>Kayi Mail — Service Statistics 📊</b>\n\n"
+        "<b>User Base:</b>\n"
+        f"• <b>Total Users:</b> <code>{stats['total_users']}</code>\n"
+        f"• <b>Active Inboxes:</b> <code>{stats['active_mailboxes']}</code>\n"
+        f"• <b>Total Inboxes Created:</b> <code>{stats['total_mailboxes']}</code>\n\n"
+        "<b>Activity:</b>\n"
+        f"• <b>Emails Processed:</b> <code>{stats['total_messages']}</code>\n"
+        f"• <b>Verification Codes Captured:</b> <code>{stats['total_otps']}</code>\n\n"
+        f"<b>Uptime:</b> <code>{uptime_str}</code>"
+    )
+    await message.reply(text, parse_mode=ParseMode.HTML)
+
 @dp.message(Command("usage"))
 @dp.message(Command("render"))
 @dp.message(Command("status"))
 async def cmd_usage(message: types.Message, bot: Bot):
+    if message.from_user.id != OWNER_ID:
+        await message.reply("Access restricted to bot owner.")
+        return
+
     text, markup = await build_usage_card_text(bot)
     await message.reply(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
