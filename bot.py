@@ -10,7 +10,7 @@ import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CopyTextButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CopyTextButton, BotCommand, BotCommandScopeDefault
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 
 from config import (
@@ -20,7 +20,7 @@ from config import (
     INTERVAL_IDLE_15M, INTERVAL_IDLE_30M
 )
 import database as db
-from mail_service import MailService, extract_verification_code
+from mail_service import MailService, extract_verification_code, DEFAULT_DOMAIN, PROVIDERS
 from keep_alive import start_web_server
 
 dp = Dispatcher()
@@ -44,13 +44,16 @@ def format_relative_time(iso_str: str) -> str:
         return "recently"
 
 # ==============================================================================
-# UI KEYBOARD BUILDERS (Apple-inspired, minimal, Bot API 10.x compliant)
+# UI KEYBOARD BUILDERS (Clean, Apple-inspired, Telegram Bot API 10.x compliant)
 # ==============================================================================
 
 def build_welcome_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="Create Address", callback_data="new:request", style="success")
+            InlineKeyboardButton(text="Create Address", callback_data="new:confirm:default", style="success")
+        ],
+        [
+            InlineKeyboardButton(text="Choose Domain", callback_data="domain:menu", style="primary")
         ],
         [
             InlineKeyboardButton(text="Community", url=COMMUNITY_URL)
@@ -64,38 +67,58 @@ def build_home_keyboard(address: str) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="Copy Address", copy_text=CopyTextButton(text=address)),
-            InlineKeyboardButton(text="Refresh", callback_data="refresh")
+            InlineKeyboardButton(text="Refresh", callback_data="refresh", style="primary")
         ],
         [
-            InlineKeyboardButton(text="New Address", callback_data="new:request"),
-            InlineKeyboardButton(text="Extend +30m", callback_data="extend:request")
+            InlineKeyboardButton(text="Change Domain", callback_data="domain:menu", style="primary"),
+            InlineKeyboardButton(text="Extend +30m", callback_data="extend:request", style="success")
         ],
         [
-            InlineKeyboardButton(text="Delete Address", callback_data="delete:request")
+            InlineKeyboardButton(text="New Address", callback_data="new:request", style="success"),
+            InlineKeyboardButton(text="Delete Address", callback_data="delete:request", style="danger")
         ],
         [
             InlineKeyboardButton(text="Community", url=COMMUNITY_URL)
         ]
     ])
 
+def build_domain_selection_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="sharklasers.com (Reddit & Discord)", callback_data="domain:set:sharklasers.com", style="primary")
+        ],
+        [
+            InlineKeyboardButton(text="fexpost.com (Fast & Clean)", callback_data="domain:set:fexpost.com", style="primary")
+        ],
+        [
+            InlineKeyboardButton(text="guerrillamail.com", callback_data="domain:set:guerrillamail.com", style="primary"),
+            InlineKeyboardButton(text="grr.la", callback_data="domain:set:grr.la", style="primary")
+        ],
+        [
+            InlineKeyboardButton(text="fexbox.org", callback_data="domain:set:fexbox.org", style="primary"),
+            InlineKeyboardButton(text="euploading.com", callback_data="domain:set:euploading.com", style="primary")
+        ],
+        [
+            InlineKeyboardButton(text="Back to Home", callback_data="home", style="success")
+        ]
+    ])
+
 def build_otp_notification_keyboard(local_msg_id: int, otp_code: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="Copy Code", copy_text=CopyTextButton(text=otp_code), style="primary")
+            InlineKeyboardButton(text=f"Copy Code: {otp_code}", copy_text=CopyTextButton(text=otp_code), style="primary")
         ],
         [
-            InlineKeyboardButton(text="Read Email", callback_data=f"read:{local_msg_id}"),
-            InlineKeyboardButton(text="Dismiss", callback_data=f"dismiss:{local_msg_id}")
+            InlineKeyboardButton(text="Read Email", callback_data=f"read:{local_msg_id}", style="success"),
+            InlineKeyboardButton(text="Dismiss", callback_data=f"dismiss:{local_msg_id}", style="danger")
         ]
     ])
 
 def build_standard_notification_keyboard(local_msg_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="Read Email", callback_data=f"read:{local_msg_id}", style="primary")
-        ],
-        [
-            InlineKeyboardButton(text="Dismiss", callback_data=f"dismiss:{local_msg_id}")
+            InlineKeyboardButton(text="Read Email", callback_data=f"read:{local_msg_id}", style="primary"),
+            InlineKeyboardButton(text="Dismiss", callback_data=f"dismiss:{local_msg_id}", style="danger")
         ]
     ])
 
@@ -105,19 +128,21 @@ def build_reader_keyboard(
     rows = []
     if otp_code:
         rows.append([
-            InlineKeyboardButton(text="Copy Code", copy_text=CopyTextButton(text=otp_code), style="primary")
+            InlineKeyboardButton(text=f"Copy Code: {otp_code}", copy_text=CopyTextButton(text=otp_code), style="primary")
         ])
 
     nav_row = []
     if prev_id is not None:
-        nav_row.append(InlineKeyboardButton(text="Previous", callback_data=f"read:{prev_id}"))
+        nav_row.append(InlineKeyboardButton(text="Previous", callback_data=f"read:{prev_id}", style="primary"))
     if next_id is not None:
-        nav_row.append(InlineKeyboardButton(text="Next", callback_data=f"read:{next_id}"))
+        nav_row.append(InlineKeyboardButton(text="Next", callback_data=f"read:{next_id}", style="primary"))
     if nav_row:
         rows.append(nav_row)
 
-    rows.append([InlineKeyboardButton(text="Back to Inbox", callback_data="inbox:0")])
-    rows.append([InlineKeyboardButton(text="Delete Email", callback_data=f"email_delete:ask:{local_msg_id}")])
+    rows.append([
+        InlineKeyboardButton(text="Back to Inbox", callback_data="inbox:0", style="success"),
+        InlineKeyboardButton(text="Delete Email", callback_data=f"email_delete:ask:{local_msg_id}", style="danger")
+    ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def build_inbox_keyboard(items: list[dict], page: int, total: int) -> InlineKeyboardMarkup:
@@ -126,29 +151,31 @@ def build_inbox_keyboard(items: list[dict], page: int, total: int) -> InlineKeyb
         subj = item.get("subject") or "Untitled email"
         clean_subj = subj[:26] + ("…" if len(subj) > 26 else "")
         rows.append([
-            InlineKeyboardButton(text=clean_subj, callback_data=f"read:{item['id']}")
+            InlineKeyboardButton(text=clean_subj, callback_data=f"read:{item['id']}", style="primary")
         ])
 
     total_pages = max(1, math.ceil(total / INBOX_PAGE_SIZE))
     nav_row = []
     if page > 0:
-        nav_row.append(InlineKeyboardButton(text="Previous", callback_data=f"inbox:{page - 1}"))
+        nav_row.append(InlineKeyboardButton(text="Previous", callback_data=f"inbox:{page - 1}", style="primary"))
     if page + 1 < total_pages:
-        nav_row.append(InlineKeyboardButton(text="Next", callback_data=f"inbox:{page + 1}"))
+        nav_row.append(InlineKeyboardButton(text="Next", callback_data=f"inbox:{page + 1}", style="primary"))
     if nav_row:
         rows.append(nav_row)
 
-    rows.append([InlineKeyboardButton(text="Refresh Inbox", callback_data="refresh", style="primary")])
-    rows.append([InlineKeyboardButton(text="Back to Home", callback_data="home")])
+    rows.append([
+        InlineKeyboardButton(text="Refresh", callback_data="refresh", style="primary"),
+        InlineKeyboardButton(text="Back to Home", callback_data="home", style="success")
+    ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def build_empty_inbox_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="Check for Emails", callback_data="refresh", style="primary")
+            InlineKeyboardButton(text="Refresh", callback_data="refresh", style="primary")
         ],
         [
-            InlineKeyboardButton(text="Back to Home", callback_data="home")
+            InlineKeyboardButton(text="Back to Home", callback_data="home", style="success")
         ]
     ])
 
@@ -171,24 +198,45 @@ async def render_home_card(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     exp_dt = datetime.fromisoformat(mailbox["expires_at"])
     remaining_mins = max(1, int((exp_dt - now).total_seconds() // 60))
     unread_count = await db.get_unread_count(mailbox["id"])
+    provider_name = mailbox.get("provider", "guerrillamail").capitalize()
 
     text = (
         f"<b>{BRAND_NAME}</b>\n"
         "Your temporary inbox\n\n"
         "<b>Your email address</b>\n"
         f"<code>{html.escape(mailbox['address'])}</code>\n\n"
-        f"Status: Active\n"
-        f"Expires in: {remaining_mins} min\n"
-        f"Unread: {unread_count}\n\n"
+        f"<b>Provider:</b> {provider_name}\n"
+        f"<b>Status:</b> Active\n"
+        f"<b>Expires in:</b> {remaining_mins} min\n"
+        f"<b>Unread:</b> {unread_count}\n\n"
         "<i>New emails are delivered here automatically.</i>"
     )
     return text, build_home_keyboard(mailbox["address"])
+
+# ==============================================================================
+# BOT COMMAND REGISTRATION (Telegram Menu)
+# ==============================================================================
+
+async def register_bot_commands(bot: Bot):
+    """Registers official commands into Telegram's menu button and slash command autocompletion."""
+    commands = [
+        BotCommand(command="start", description="Open your temporary inbox"),
+        BotCommand(command="mail", description="View current address & inbox"),
+        BotCommand(command="inbox", description="View received messages"),
+        BotCommand(command="new", description="Create a new temporary address")
+    ]
+    try:
+        await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+        print("[commands] Registered official Telegram bot commands.")
+    except Exception as e:
+        print(f"[commands] Failed to register commands: {e}")
 
 # ==============================================================================
 # COMMAND HANDLERS
 # ==============================================================================
 
 @dp.message(Command("start"))
+@dp.message(Command("mail"))
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     await db.touch_user(user_id)
@@ -239,13 +287,14 @@ async def cmd_new(message: types.Message):
         await message.reply(
             f"<b>Please wait</b>\nYou can create another address in {wait_s} seconds.",
             parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Back to Home", callback_data="home")]])
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Back to Home", callback_data="home", style="success")]])
         )
         return
 
     markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Create Address", callback_data="new:confirm", style="success")],
-        [InlineKeyboardButton(text="Cancel", callback_data="home")]
+        [InlineKeyboardButton(text="Create Address", callback_data="new:confirm:default", style="success")],
+        [InlineKeyboardButton(text="Choose Domain", callback_data="domain:menu", style="primary")],
+        [InlineKeyboardButton(text="Cancel", callback_data="home", style="danger")]
     ])
     await message.reply(
         "<b>Create a new address?</b>\nYour current inbox will be replaced with a fresh address.",
@@ -254,7 +303,7 @@ async def cmd_new(message: types.Message):
     )
 
 # ==============================================================================
-# CALLBACK QUERY HANDLERS (Namespace: home, inbox, new, extend, read, delete)
+# CALLBACK QUERY HANDLERS
 # ==============================================================================
 
 @dp.callback_query(F.data == "home")
@@ -267,6 +316,65 @@ async def cb_home(callback: types.CallbackQuery):
     except TelegramBadRequest:
         pass
     await callback.answer()
+
+@dp.callback_query(F.data == "domain:menu")
+async def cb_domain_menu(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    await db.touch_user(user_id)
+    text = (
+        "<b>Select Email Domain</b>\n"
+        "Choose a provider domain for your temporary inbox:\n\n"
+        "• <b>sharklasers.com</b> — Works with Reddit & Discord\n"
+        "• <b>fexpost.com</b> — Clean & instant delivery\n"
+        "• <b>guerrillamail.com</b> — Standard Guerrilla Mail\n"
+        "• <b>grr.la</b> — Short domain alias\n"
+        "• <b>fexbox.org</b> — TempMail Plus alternate\n"
+        "• <b>euploading.com</b> — Mail.tm standard\n\n"
+        "<i>Selecting a domain will generate a fresh address immediately.</i>"
+    )
+    await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=build_domain_selection_keyboard())
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("domain:set:"))
+async def cb_domain_set(callback: types.CallbackQuery):
+    domain = callback.data.split(":")[2]
+    user_id = callback.from_user.id
+    await db.touch_user(user_id)
+
+    allowed, reason, wait_s = await db.check_generation_limits(user_id)
+    if not allowed:
+        await callback.answer(f"Please wait {wait_s}s before switching addresses.", show_alert=True)
+        return
+
+    await callback.answer(f"Creating inbox on @{domain}...")
+    new_data = await mail_service.create_mailbox(domain)
+    if not new_data:
+        await callback.message.edit_text(
+            f"<b>Notice</b>\nUnable to initialize inbox on <code>{domain}</code> right now. Please select another domain.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=build_domain_selection_keyboard()
+        )
+        return
+
+    # Delete old provider account in background
+    old_box = await db.get_active_mailbox(user_id)
+    if old_box:
+        asyncio.create_task(mail_service.delete_account(
+            old_box.get("provider", "guerrillamail"),
+            old_box.get("token", ""),
+            old_box.get("account_id", "")
+        ))
+
+    await db.save_new_mailbox(
+        user_id,
+        new_data["email"],
+        new_data["provider"],
+        new_data["account_id"],
+        new_data["token"]
+    )
+
+    text, markup = await render_home_card(user_id)
+    await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 @dp.callback_query(F.data == "refresh")
 async def cb_refresh(callback: types.CallbackQuery):
@@ -281,18 +389,21 @@ async def cb_refresh(callback: types.CallbackQuery):
 
     # Trigger instant provider fetch
     if mail_service and mailbox.get("token"):
-        prov_msgs = await mail_service.get_messages(mailbox["token"])
+        prov = mailbox.get("provider") or "guerrillamail"
+        token = mailbox.get("token")
+        addr = mailbox.get("address")
+        prov_msgs = await mail_service.get_messages(prov, token, addr)
         new_count = 0
         for m in prov_msgs:
             p_id = m.get("id")
             if not p_id or await db.is_message_recorded(mailbox["id"], p_id):
                 continue
-            detail = await mail_service.get_message_detail(mailbox["token"], p_id)
+            detail = await mail_service.get_message_detail(prov, token, addr, p_id)
             if detail:
-                s_addr = detail.get("from", {}).get("address", "")
-                s_name = detail.get("from", {}).get("name") or s_addr
+                s_addr = detail.get("from_addr") or ""
+                s_name = detail.get("from_name") or s_addr
                 s_subj = detail.get("subject") or "No Subject"
-                s_body = detail.get("text") or detail.get("intro") or ""
+                s_body = detail.get("text") or ""
                 s_otp = extract_verification_code(s_subj, s_body)
                 rec_at = detail.get("createdAt") or datetime.now(timezone.utc).isoformat()
                 await db.save_incoming_message(
@@ -361,8 +472,9 @@ async def cb_new_request(callback: types.CallbackQuery):
         return
 
     markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Create Address", callback_data="new:confirm", style="success")],
-        [InlineKeyboardButton(text="Cancel", callback_data="home")]
+        [InlineKeyboardButton(text="Create Address", callback_data="new:confirm:default", style="success")],
+        [InlineKeyboardButton(text="Choose Domain", callback_data="domain:menu", style="primary")],
+        [InlineKeyboardButton(text="Cancel", callback_data="home", style="danger")]
     ])
     await callback.message.edit_text(
         "<b>Create a new address?</b>\nYour current inbox will be replaced with a fresh address.",
@@ -371,7 +483,7 @@ async def cb_new_request(callback: types.CallbackQuery):
     )
     await callback.answer()
 
-@dp.callback_query(F.data == "new:confirm")
+@dp.callback_query(F.data.startswith("new:confirm"))
 async def cb_new_confirm(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     await db.touch_user(user_id)
@@ -381,22 +493,31 @@ async def cb_new_confirm(callback: types.CallbackQuery):
         return
 
     await callback.answer("Creating address...")
-    # Safe replacement: Do not delete old until new is verified
-    new_data = await mail_service.create_mailbox()
+    new_data = await mail_service.create_mailbox(DEFAULT_DOMAIN)
     if not new_data:
         await callback.message.edit_text(
             "<b>Service Notice</b>\nEmail service is temporarily unavailable. Please try again shortly.",
             parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Retry", callback_data="new:confirm", style="success")], [InlineKeyboardButton(text="Cancel", callback_data="home")]])
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Retry", callback_data="new:confirm:default", style="success")], [InlineKeyboardButton(text="Cancel", callback_data="home", style="danger")]])
         )
         return
 
     # Delete old provider account in background
     old_box = await db.get_active_mailbox(user_id)
     if old_box:
-        asyncio.create_task(mail_service.delete_account(old_box["token"], old_box["account_id"]))
+        asyncio.create_task(mail_service.delete_account(
+            old_box.get("provider", "guerrillamail"),
+            old_box.get("token", ""),
+            old_box.get("account_id", "")
+        ))
 
-    await db.save_new_mailbox(user_id, new_data["email"], new_data["token"], new_data["account_id"])
+    await db.save_new_mailbox(
+        user_id,
+        new_data["email"],
+        new_data["provider"],
+        new_data["account_id"],
+        new_data["token"]
+    )
     text, markup = await render_home_card(user_id)
     await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
@@ -421,7 +542,7 @@ async def cb_extend(callback: types.CallbackQuery):
 async def cb_delete_request(callback: types.CallbackQuery):
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Delete Address", callback_data="delete:confirm", style="danger")],
-        [InlineKeyboardButton(text="Cancel", callback_data="home")]
+        [InlineKeyboardButton(text="Cancel", callback_data="home", style="success")]
     ])
     await callback.message.edit_text(
         "<b>Delete this address?</b>\nYour current inbox and its messages will no longer be accessible. This action cannot be undone.",
@@ -435,7 +556,11 @@ async def cb_delete_confirm(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     deleted_box = await db.delete_mailbox(user_id)
     if deleted_box:
-        asyncio.create_task(mail_service.delete_account(deleted_box["token"], deleted_box["account_id"]))
+        asyncio.create_task(mail_service.delete_account(
+            deleted_box.get("provider", "guerrillamail"),
+            deleted_box.get("token", ""),
+            deleted_box.get("account_id", "")
+        ))
 
     await callback.answer("Address deleted.")
     text, markup = await render_home_card(user_id)
@@ -484,7 +609,7 @@ async def cb_email_delete_ask(callback: types.CallbackQuery):
     local_id = int(callback.data.split(":")[2])
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Delete Email", callback_data=f"email_delete:confirm:{local_id}", style="danger")],
-        [InlineKeyboardButton(text="Cancel", callback_data=f"read:{local_id}")]
+        [InlineKeyboardButton(text="Cancel", callback_data=f"read:{local_id}", style="success")]
     ])
     await callback.message.edit_text(
         "<b>Delete this email?</b>\nThis message will be permanently removed from your inbox.",
@@ -555,6 +680,8 @@ async def auto_email_listener_loop(bot: Bot):
                 box_id = box["id"]
                 user_id = box["user_id"]
                 token = box["token"]
+                address = box["address"]
+                provider = box.get("provider") or "guerrillamail"
 
                 created_dt = datetime.fromisoformat(box["created_at"])
                 active_dt = datetime.fromisoformat(box["last_active_at"])
@@ -583,21 +710,21 @@ async def auto_email_listener_loop(bot: Bot):
 
                 await db.update_mailbox_polled_time(box_id)
 
-                # Fetch messages through rate-limited client
-                prov_msgs = await mail_service.get_messages(token)
+                # Fetch messages through multi-provider client
+                prov_msgs = await mail_service.get_messages(provider, token, address)
                 for m in prov_msgs:
                     p_id = m.get("id")
                     if not p_id or await db.is_message_recorded(box_id, p_id):
                         continue
 
-                    detail = await mail_service.get_message_detail(token, p_id)
+                    detail = await mail_service.get_message_detail(provider, token, address, p_id)
                     if not detail:
                         continue
 
-                    s_addr = detail.get("from", {}).get("address", "")
-                    s_name = detail.get("from", {}).get("name") or s_addr
+                    s_addr = detail.get("from_addr") or ""
+                    s_name = detail.get("from_name") or s_addr
                     s_subj = detail.get("subject") or "No Subject"
-                    s_body = detail.get("text") or detail.get("intro") or ""
+                    s_body = detail.get("text") or ""
                     rec_at = detail.get("createdAt") or now.isoformat()
                     s_otp = extract_verification_code(s_subj, s_body)
 
@@ -667,6 +794,9 @@ async def main():
     runner = await start_web_server()
     await bot.delete_webhook(drop_pending_updates=True)
 
+    # Register Telegram slash commands & menu button
+    await register_bot_commands(bot)
+
     # Launch background adaptive polling scheduler
     asyncio.create_task(auto_email_listener_loop(bot))
 
@@ -676,6 +806,7 @@ async def main():
     finally:
         if HTTP_SESSION and not HTTP_SESSION.closed:
             await HTTP_SESSION.close()
+            await asyncio.sleep(0.25)
         await bot.session.close()
         await runner.cleanup()
 

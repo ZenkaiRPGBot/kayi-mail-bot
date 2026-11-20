@@ -3,11 +3,36 @@ import random
 import string
 import asyncio
 import time
+import html
 from datetime import datetime, timezone
 import aiohttp
-from config import GLOBAL_API_RATE_LIMIT, GLOBAL_BURST_CAPACITY
 
-BASE_URL = "https://api.mail.tm"
+# Supported Providers and Domains
+PROVIDERS = {
+    "guerrillamail": {
+        "name": "Guerrilla Mail",
+        "domains": ["sharklasers.com", "guerrillamail.com", "grr.la", "pokemail.net"]
+    },
+    "tempmailplus": {
+        "name": "TempMail Plus",
+        "domains": ["fexpost.com", "fexbox.org"]
+    },
+    "mailtm": {
+        "name": "Mail.tm",
+        "domains": ["euploading.com"]
+    }
+}
+
+DEFAULT_DOMAIN = "sharklasers.com"  # Reddit & Discord approved!
+
+def get_provider_for_domain(domain: str) -> str:
+    domain_lower = domain.lower().strip()
+    for prov_key, prov_info in PROVIDERS.items():
+        if domain_lower in prov_info["domains"]:
+            return prov_key
+    if "mail.tm" in domain_lower or "euploading" in domain_lower:
+        return "mailtm"
+    return "guerrillamail"
 
 def generate_random_string(length: int = 8) -> str:
     """Generates clean random alphanumeric string for email prefix."""
@@ -43,7 +68,6 @@ def extract_verification_code(subject: str = "", body: str = "") -> str | None:
     for code in subject_matches:
         if len(code) == 4 and (code.startswith("19") or code.startswith("20")):
             continue
-        # If words like "verify", "code", "account" are in subject, high confidence
         if re.search(r'(?:verify|code|account|login|signup|security)', subject, re.IGNORECASE):
             return code
 
@@ -51,159 +75,290 @@ def extract_verification_code(subject: str = "", body: str = "") -> str | None:
     alphanumeric_match = re.search(r'(?:code|pin)[^\w\n\r]{0,20}\b([A-Z0-9]{5,8})\b', combined, re.IGNORECASE)
     if alphanumeric_match:
         code = alphanumeric_match.group(1).upper()
-        # Avoid common words
         if code not in ["PLEASE", "VERIFY", "THANKS", "GOOGLE", "GITHUB", "DISCORD"]:
             return code
 
     return None
 
-class AsyncRateLimiter:
-    """Token bucket rate limiter ensuring we do not exceed 4 requests/sec on Mail.tm."""
-    def __init__(self, rate: float = GLOBAL_API_RATE_LIMIT, capacity: float = GLOBAL_BURST_CAPACITY):
-        self.rate = rate
-        self.capacity = capacity
-        self.tokens = capacity
-        self.last_check = time.monotonic()
-        self._lock = asyncio.Lock()
-
-    async def acquire(self):
-        async with self._lock:
-            while True:
-                now = time.monotonic()
-                elapsed = now - self.last_check
-                self.last_check = now
-                self.tokens = min(self.capacity, self.tokens + elapsed * self.rate)
-
-                if self.tokens >= 1.0:
-                    self.tokens -= 1.0
-                    return
-                # Wait for token
-                needed = (1.0 - self.tokens) / self.rate
-                await asyncio.sleep(max(0.05, needed))
-
 class MailService:
     def __init__(self, session: aiohttp.ClientSession):
         self.session = session
-        self.limiter = AsyncRateLimiter()
-        self.creation_lock = asyncio.Lock()
-        self.last_creation_time = 0.0
         self.headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "KayiMailBot/2.0 (Telegram disposable mail)"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         }
 
-    async def _request(self, method: str, url: str, **kwargs) -> aiohttp.ClientResponse | None:
-        """Executes HTTP request through the rate limiter with 429 retry backoff."""
-        await self.limiter.acquire()
-        headers = {**self.headers, **kwargs.pop("headers", {})}
+    # =========================================================================
+    # UNIFIED MAILBOX CREATION
+    # =========================================================================
 
-        for attempt in range(3):
-            try:
-                resp = await self.session.request(method, url, headers=headers, timeout=aiohttp.ClientTimeout(total=8), **kwargs)
-                if resp.status == 429:
-                    retry_after = resp.headers.get("Retry-After")
-                    try:
-                        wait_sec = float(retry_after) if retry_after else (2 ** attempt) + random.uniform(0.5, 1.5)
-                    except ValueError:
-                        wait_sec = (2 ** attempt) + 1.0
-                    print(f"[mail_service] 429 Rate limited. Waiting {wait_sec:.1f}s...")
-                    await asyncio.sleep(wait_sec)
-                    await self.limiter.acquire()
-                    continue
-                return resp
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                if attempt == 2:
-                    print(f"[mail_service] Request failed ({method} {url}): {e}")
+    async def create_mailbox(self, domain: str = DEFAULT_DOMAIN) -> dict | None:
+        """
+        Creates a new mailbox with the requested domain across providers.
+        Defaults to sharklasers.com (Guerrilla Mail - Reddit & Discord friendly).
+        """
+        provider = get_provider_for_domain(domain)
+
+        if provider == "guerrillamail":
+            return await self._create_guerrillamail_box(domain)
+        elif provider == "tempmailplus":
+            return await self._create_tempmailplus_box(domain)
+        elif provider == "mailtm":
+            return await self._create_mailtm_box(domain)
+        return await self._create_guerrillamail_box(DEFAULT_DOMAIN)
+
+    # 1. Guerrilla Mail Provider
+    async def _create_guerrillamail_box(self, domain: str) -> dict | None:
+        try:
+            url = "https://api.guerrillamail.com/ajax.php?f=get_email_address"
+            async with self.session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                if resp.status != 200:
                     return None
-                await asyncio.sleep(1.0)
-        return None
+                data = await resp.json(content_type=None)
+                sid_token = data.get("sid_token")
 
-    async def get_domain(self) -> str | None:
-        """Fetches active provider domain."""
-        resp = await self._request("GET", f"{BASE_URL}/domains")
-        if resp and resp.status == 200:
-            try:
-                data = await resp.json()
-                members = data.get("hydra:member", [])
-                if members:
-                    return members[0].get("domain")
-            except Exception:
-                pass
-        return None
+            # Set custom clean username
+            user_prefix = f"kayi_{generate_random_string(7)}"
+            set_url = f"https://api.guerrillamail.com/ajax.php?f=set_email_user&email_user={user_prefix}&sid_token={sid_token}"
+            async with self.session.get(set_url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=8)) as resp2:
+                if resp2.status != 200:
+                    return None
 
-    async def create_mailbox(self) -> dict | None:
-        """Serializes account creation to respect provider creation thresholds."""
-        async with self.creation_lock:
-            # Enforce small pacing between creations
-            elapsed = time.monotonic() - self.last_creation_time
-            if elapsed < 2.0:
-                await asyncio.sleep(2.0 - elapsed)
+            email_address = f"{user_prefix}@{domain}"
+            return {
+                "email": email_address,
+                "provider": "guerrillamail",
+                "token": sid_token,
+                "account_id": user_prefix
+            }
+        except Exception as e:
+            print(f"[mail_service] Guerrilla Mail create error: {e}")
+            return None
 
-            domain = await self.get_domain()
-            if not domain:
-                return None
+    # 2. TempMail Plus Provider
+    async def _create_tempmailplus_box(self, domain: str) -> dict | None:
+        user_prefix = f"kayi_{generate_random_string(7)}"
+        email_address = f"{user_prefix}@{domain}"
+        return {
+            "email": email_address,
+            "provider": "tempmailplus",
+            "token": email_address,
+            "account_id": user_prefix
+        }
 
-            username = f"kayi_{generate_random_string(7)}"
-            email_address = f"{username}@{domain}"
+    # 3. Mail.tm Provider
+    async def _create_mailtm_box(self, domain: str) -> dict | None:
+        try:
+            user_prefix = f"kayi_{generate_random_string(7)}"
+            email_address = f"{user_prefix}@{domain}"
             password = generate_random_string(14)
             payload = {"address": email_address, "password": password}
 
             # 1. Create account
-            acc_resp = await self._request("POST", f"{BASE_URL}/accounts", json=payload)
-            if not acc_resp or acc_resp.status != 201:
-                return None
-
-            try:
-                acc_data = await acc_resp.json()
+            async with self.session.post("https://api.mail.tm/accounts", json=payload, headers=self.headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                if resp.status != 201:
+                    return None
+                acc_data = await resp.json()
                 account_id = acc_data.get("id")
-            except Exception:
-                return None
 
-            # 2. Obtain JWT Token
-            token_resp = await self._request("POST", f"{BASE_URL}/token", json=payload)
-            if not token_resp or token_resp.status != 200:
-                return None
+            # 2. Obtain real JWT token
+            async with self.session.post("https://api.mail.tm/token", json=payload, headers=self.headers, timeout=aiohttp.ClientTimeout(total=8)) as resp2:
+                if resp2.status != 200:
+                    return None
+                token_data = await resp2.json()
+                jwt_token = token_data.get("token")
 
-            try:
-                token_data = await token_resp.json()
-                token = token_data.get("token")
-            except Exception:
-                return None
-
-            self.last_creation_time = time.monotonic()
             return {
                 "email": email_address,
-                "token": token,
+                "provider": "mailtm",
+                "token": jwt_token,
                 "account_id": account_id
             }
+        except Exception as e:
+            print(f"[mail_service] Mail.tm create error: {e}")
+            return None
 
-    async def get_messages(self, token: str) -> list[dict]:
-        """Lists all messages currently in the user's provider inbox."""
-        headers = {"Authorization": f"Bearer {token}"}
-        resp = await self._request("GET", f"{BASE_URL}/messages", headers=headers)
-        if resp and resp.status == 200:
-            try:
-                data = await resp.json()
-                return data.get("hydra:member", [])
-            except Exception:
-                pass
+    # =========================================================================
+    # UNIFIED MESSAGE LISTING
+    # =========================================================================
+
+    async def get_messages(self, provider: str, token: str, address: str) -> list[dict]:
+        """
+        Retrieves list of messages normalized to:
+        [{'id': str, 'from': str, 'subject': str, 'body': str, 'createdAt': str}]
+        """
+        if provider == "guerrillamail":
+            return await self._get_guerrillamail_messages(token)
+        elif provider == "tempmailplus":
+            return await self._get_tempmailplus_messages(address)
+        elif provider == "mailtm":
+            return await self._get_mailtm_messages(token)
         return []
 
-    async def get_message_detail(self, token: str, provider_msg_id: str) -> dict | None:
-        """Retrieves full body content and details of a single message."""
-        headers = {"Authorization": f"Bearer {token}"}
-        resp = await self._request("GET", f"{BASE_URL}/messages/{provider_msg_id}", headers=headers)
-        if resp and resp.status == 200:
-            try:
-                return await resp.json()
-            except Exception:
-                pass
+    async def _get_guerrillamail_messages(self, sid_token: str) -> list[dict]:
+        try:
+            url = f"https://api.guerrillamail.com/ajax.php?f=check_email&seq=0&sid_token={sid_token}"
+            async with self.session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json(content_type=None)
+                raw_list = data.get("list", [])
+                normalized = []
+                for m in raw_list:
+                    # Ignore initial Guerrilla Mail welcome email
+                    if m.get("mail_id") == 1 or "welcome to guerrilla mail" in (m.get("mail_subject") or "").lower():
+                        continue
+                    clean_body = re.sub(r'<[^>]+>', ' ', m.get("mail_body") or m.get("mail_excerpt") or "").strip()
+                    normalized.append({
+                        "id": str(m.get("mail_id")),
+                        "from": m.get("mail_from") or "Unknown",
+                        "subject": m.get("mail_subject") or "No Subject",
+                        "body": clean_body,
+                        "createdAt": datetime.now(timezone.utc).isoformat()
+                    })
+                return normalized
+        except Exception as e:
+            print(f"[mail_service] Guerrilla Mail check error: {e}")
+            return []
+
+    async def _get_tempmailplus_messages(self, email_address: str) -> list[dict]:
+        try:
+            url = f"https://tempmail.plus/api/mails?email={email_address}&limit=20"
+            async with self.session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json(content_type=None)
+                raw_list = data.get("mail_list", [])
+                normalized = []
+                for m in raw_list:
+                    normalized.append({
+                        "id": str(m.get("mail_id")),
+                        "from": m.get("from") or "Unknown",
+                        "subject": m.get("subject") or "No Subject",
+                        "body": "",
+                        "createdAt": m.get("date") or datetime.now(timezone.utc).isoformat()
+                    })
+                return normalized
+        except Exception as e:
+            print(f"[mail_service] TempMail Plus check error: {e}")
+            return []
+
+    async def _get_mailtm_messages(self, jwt_token: str) -> list[dict]:
+        try:
+            headers = {**self.headers, "Authorization": f"Bearer {jwt_token}"}
+            async with self.session.get("https://api.mail.tm/messages", headers=headers, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json()
+                raw_list = data.get("hydra:member", [])
+                normalized = []
+                for m in raw_list:
+                    normalized.append({
+                        "id": m.get("id"),
+                        "from": m.get("from", {}).get("address", "Unknown"),
+                        "subject": m.get("subject") or "No Subject",
+                        "body": m.get("intro") or "",
+                        "createdAt": m.get("createdAt") or datetime.now(timezone.utc).isoformat()
+                    })
+                return normalized
+        except Exception as e:
+            print(f"[mail_service] Mail.tm check error: {e}")
+            return []
+
+    # =========================================================================
+    # UNIFIED MESSAGE DETAIL
+    # =========================================================================
+
+    async def get_message_detail(self, provider: str, token: str, address: str, msg_id: str) -> dict | None:
+        """
+        Retrieves full details normalized to:
+        {'from_name': str, 'from_addr': str, 'subject': str, 'text': str, 'createdAt': str}
+        """
+        if provider == "guerrillamail":
+            return await self._get_guerrillamail_detail(token, msg_id)
+        elif provider == "tempmailplus":
+            return await self._get_tempmailplus_detail(address, msg_id)
+        elif provider == "mailtm":
+            return await self._get_mailtm_detail(token, msg_id)
         return None
 
-    async def delete_account(self, token: str, account_id: str) -> bool:
-        """Deletes user mailbox from provider servers."""
-        if not account_id or not token:
-            return False
-        headers = {"Authorization": f"Bearer {token}"}
-        resp = await self._request("DELETE", f"{BASE_URL}/accounts/{account_id}", headers=headers)
-        return resp is not None and resp.status in [200, 204]
+    async def _get_guerrillamail_detail(self, sid_token: str, msg_id: str) -> dict | None:
+        try:
+            url = f"https://api.guerrillamail.com/ajax.php?f=fetch_email&email_id={msg_id}&sid_token={sid_token}"
+            async with self.session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json(content_type=None)
+                raw_body = data.get("mail_body") or ""
+                clean_body = re.sub(r'<[^>]+>', ' ', raw_body).strip()
+                clean_body = html.unescape(clean_body)
+                from_raw = data.get("mail_from") or "Unknown"
+                return {
+                    "from_name": from_raw,
+                    "from_addr": from_raw,
+                    "subject": data.get("mail_subject") or "No Subject",
+                    "text": clean_body,
+                    "createdAt": datetime.now(timezone.utc).isoformat()
+                }
+        except Exception as e:
+            print(f"[mail_service] Guerrilla Mail detail error: {e}")
+            return None
+
+    async def _get_tempmailplus_detail(self, email_address: str, msg_id: str) -> dict | None:
+        try:
+            url = f"https://tempmail.plus/api/mails/{msg_id}?email={email_address}"
+            async with self.session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json(content_type=None)
+                text_content = data.get("text") or re.sub(r'<[^>]+>', ' ', data.get("html") or "").strip()
+                from_raw = data.get("from") or "Unknown"
+                return {
+                    "from_name": from_raw,
+                    "from_addr": from_raw,
+                    "subject": data.get("subject") or "No Subject",
+                    "text": text_content,
+                    "createdAt": data.get("date") or datetime.now(timezone.utc).isoformat()
+                }
+        except Exception as e:
+            print(f"[mail_service] TempMail Plus detail error: {e}")
+            return None
+
+    async def _get_mailtm_detail(self, jwt_token: str, msg_id: str) -> dict | None:
+        try:
+            headers = {**self.headers, "Authorization": f"Bearer {jwt_token}"}
+            async with self.session.get(f"https://api.mail.tm/messages/{msg_id}", headers=headers, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                from_obj = data.get("from", {})
+                return {
+                    "from_name": from_obj.get("name") or from_obj.get("address") or "Unknown",
+                    "from_addr": from_obj.get("address") or "Unknown",
+                    "subject": data.get("subject") or "No Subject",
+                    "text": data.get("text") or data.get("intro") or "",
+                    "createdAt": data.get("createdAt") or datetime.now(timezone.utc).isoformat()
+                }
+        except Exception as e:
+            print(f"[mail_service] Mail.tm detail error: {e}")
+            return None
+
+    # =========================================================================
+    # DELETE ACCOUNT
+    # =========================================================================
+
+    async def delete_account(self, provider: str, token: str, account_id: str) -> bool:
+        if provider == "mailtm" and account_id and token:
+            try:
+                headers = {**self.headers, "Authorization": f"Bearer {token}"}
+                async with self.session.delete(f"https://api.mail.tm/accounts/{account_id}", headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    return resp.status in [200, 204]
+            except Exception:
+                return False
+        elif provider == "guerrillamail" and token:
+            try:
+                url = f"https://api.guerrillamail.com/ajax.php?f=forget_me&sid_token={token}"
+                async with self.session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=5)):
+                    return True
+            except Exception:
+                return False
+        return True

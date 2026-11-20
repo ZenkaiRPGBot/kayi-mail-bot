@@ -31,6 +31,7 @@ async def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 address TEXT NOT NULL,
+                provider TEXT NOT NULL DEFAULT 'guerrillamail',
                 account_id TEXT NOT NULL,
                 token TEXT NOT NULL,
                 created_at TIMESTAMP NOT NULL,
@@ -90,13 +91,6 @@ async def touch_user(user_id: int):
         await db.commit()
 
 async def check_generation_limits(user_id: int) -> tuple[bool, str, int]:
-    """
-    Evaluates anti-abuse policies (Spec v1.0):
-    1. 60s minimum interval (monotonic cooldown)
-    2. 5 new addresses per rolling hour
-    3. 15 new addresses per rolling 24 hours
-    Returns (is_allowed, reason, seconds_remaining)
-    """
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
     one_hour_ago = (now - timedelta(hours=1)).isoformat()
@@ -137,7 +131,6 @@ async def check_generation_limits(user_id: int) -> tuple[bool, str, int]:
 
 async def get_active_mailbox(user_id: int) -> dict | None:
     now = datetime.now(timezone.utc)
-    now_iso = now.isoformat()
 
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -158,7 +151,7 @@ async def get_active_mailbox(user_id: int) -> dict | None:
 
             return dict(row)
 
-async def save_new_mailbox(user_id: int, address: str, token: str, account_id: str) -> dict:
+async def save_new_mailbox(user_id: int, address: str, provider: str, account_id: str, token: str) -> dict:
     now = datetime.now(timezone.utc)
     expires = now + timedelta(minutes=DEFAULT_LIFETIME_MINUTES)
     now_iso = now.isoformat()
@@ -176,11 +169,11 @@ async def save_new_mailbox(user_id: int, address: str, token: str, account_id: s
         # Retire any previous active mailbox safely
         await db.execute("UPDATE mailboxes SET status = 'replaced' WHERE user_id = ? AND status = 'active'", (user_id,))
 
-        # Insert new mailbox
+        # Insert new mailbox with EXACT matching column order
         cursor = await db.execute("""
-            INSERT INTO mailboxes (user_id, address, account_id, token, created_at, expires_at, status, extension_count)
-            VALUES (?, ?, ?, ?, ?, ?, 'active', 0)
-        """, (user_id, address, token, account_id, now_iso, exp_iso))
+            INSERT INTO mailboxes (user_id, address, provider, account_id, token, created_at, expires_at, status, extension_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0)
+        """, (user_id, address, provider, account_id, token, now_iso, exp_iso))
         box_id = cursor.lastrowid
 
         # Record in rate limits
@@ -193,11 +186,6 @@ async def save_new_mailbox(user_id: int, address: str, token: str, account_id: s
             return dict(await cur.fetchone())
 
 async def extend_mailbox(user_id: int) -> tuple[bool, str, int]:
-    """
-    Extends active mailbox by +30m.
-    Rules: Max 2 extensions, max total lifetime 120m from creation.
-    Returns (success, reason_or_expiry_iso, remaining_minutes)
-    """
     now = datetime.now(timezone.utc)
     box = await get_active_mailbox(user_id)
     if not box:
@@ -210,7 +198,6 @@ async def extend_mailbox(user_id: int) -> tuple[bool, str, int]:
     curr_exp = datetime.fromisoformat(box["expires_at"])
     max_allowed_exp = created_dt + timedelta(minutes=MAX_TOTAL_LIFETIME_MINUTES)
 
-    # Base extension from max of now or curr_exp
     base = max(curr_exp, now)
     proposed_exp = base + timedelta(minutes=EXTENSION_INCREMENT_MINUTES)
     new_exp = min(proposed_exp, max_allowed_exp)
@@ -245,7 +232,7 @@ async def is_message_recorded(mailbox_id: int, provider_message_id: str) -> bool
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT 1 FROM messages WHERE mailbox_id = ? AND provider_message_id = ?",
-            (mailbox_id, provider_message_id)
+            (mailbox_id, str(provider_message_id))
         ) as cursor:
             return (await cursor.fetchone()) is not None
 
@@ -259,7 +246,7 @@ async def save_incoming_message(
             INSERT OR IGNORE INTO messages 
             (mailbox_id, provider_message_id, sender_address, sender_name, subject, received_at, notified_at, otp_code, body_text)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (mailbox_id, provider_message_id, sender_address, sender_name, subject, received_at, now_iso, otp_code, body_text))
+        """, (mailbox_id, str(provider_message_id), sender_address, sender_name, subject, received_at, now_iso, otp_code, body_text))
         await db.commit()
         return cursor.lastrowid
 
@@ -267,7 +254,6 @@ async def get_mailbox_messages(mailbox_id: int, page: int = 0, page_size: int = 
     offset = page * page_size
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        # Total count
         async with db.execute("SELECT COUNT(*) FROM messages WHERE mailbox_id = ?", (mailbox_id,)) as cur:
             total = (await cur.fetchone())[0]
 
@@ -292,9 +278,8 @@ async def get_unread_count(mailbox_id: int) -> int:
 async def get_message_detail(local_id: int, user_id: int) -> dict | None:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        # Verify user ownership via JOIN with mailboxes
         query = """
-            SELECT m.*, b.user_id, b.address as mailbox_address
+            SELECT m.*, b.user_id, b.address as mailbox_address, b.provider, b.token as mailbox_token
             FROM messages m
             JOIN mailboxes b ON m.mailbox_id = b.id
             WHERE m.id = ? AND b.user_id = ?
@@ -303,14 +288,12 @@ async def get_message_detail(local_id: int, user_id: int) -> dict | None:
             row = await cur.fetchone()
             if not row:
                 return None
-            # Mark read
             await db.execute("UPDATE messages SET is_read = 1 WHERE id = ?", (local_id,))
             await db.commit()
             return dict(row)
 
 async def get_adjacent_message_ids(local_id: int, mailbox_id: int) -> tuple[int | None, int | None]:
     async with aiosqlite.connect(DB_PATH) as db:
-        # Previous (older message, lower ID)
         async with db.execute(
             "SELECT id FROM messages WHERE mailbox_id = ? AND id < ? ORDER BY id DESC LIMIT 1",
             (mailbox_id, local_id)
@@ -318,7 +301,6 @@ async def get_adjacent_message_ids(local_id: int, mailbox_id: int) -> tuple[int 
             prev_row = await cur.fetchone()
             prev_id = prev_row[0] if prev_row else None
 
-        # Next (newer message, higher ID)
         async with db.execute(
             "SELECT id FROM messages WHERE mailbox_id = ? AND id > ? ORDER BY id ASC LIMIT 1",
             (mailbox_id, local_id)
@@ -330,7 +312,6 @@ async def get_adjacent_message_ids(local_id: int, mailbox_id: int) -> tuple[int 
 
 async def delete_message(local_id: int, user_id: int) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
-        # Check ownership
         async with db.execute("""
             SELECT m.id FROM messages m
             JOIN mailboxes b ON m.mailbox_id = b.id
@@ -344,16 +325,11 @@ async def delete_message(local_id: int, user_id: int) -> bool:
         return True
 
 async def get_mailboxes_for_monitoring() -> list[dict]:
-    """
-    Returns active mailboxes with mailbox age and user idle time for adaptive scheduling.
-    """
-    now = datetime.now(timezone.utc)
-    now_iso = now.isoformat()
-
+    now_iso = datetime.now(timezone.utc).isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         query = """
-            SELECT b.id, b.user_id, b.address, b.token, b.created_at, b.expires_at, 
+            SELECT b.id, b.user_id, b.address, b.provider, b.token, b.created_at, b.expires_at, 
                    b.last_polled_at, u.last_active_at
             FROM mailboxes b
             JOIN users u ON b.user_id = u.telegram_id
