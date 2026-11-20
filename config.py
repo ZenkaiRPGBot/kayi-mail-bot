@@ -13,6 +13,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 # Bot Owner ID
 OWNER_ID = int(os.getenv("OWNER_ID", "986380678"))
 
+# Future Shared Log Channel (Optional)
+LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID", "").strip()
+
 # Brand Identity
 BRAND_NAME = "Kayi Mail"
 CHANNEL_USERNAME = "@KayiBots"

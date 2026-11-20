@@ -10,7 +10,7 @@ from aiogram.enums import ParseMode
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config import (
-    BOT_TOKEN, OWNER_ID, BOT_START_TIME, BRAND_NAME, CHANNEL_USERNAME,
+    BOT_TOKEN, OWNER_ID, LOG_CHANNEL_ID, BOT_START_TIME, BRAND_NAME, CHANNEL_USERNAME,
     RATE_LIMIT_SECONDS, MAILBOX_LIFETIME_MINUTES, POLLING_INTERVAL_SECONDS
 )
 import database as db
@@ -37,6 +37,53 @@ def get_uptime_string() -> str:
     parts.append(f"{seconds}s")
     return " ".join(parts)
 
+def build_rich_restart_markdown() -> str:
+    """Clean, non-technical rich message table for restart notification."""
+    return f"""# {BRAND_NAME} Online
+
+| Feature | Status |
+| :--- | :---: |
+| Bot Status | Online 🟢 |
+| Mail Engine | Ready 🟢 |
+| Smart OTP | Active 🟢 |
+| Auto-Listener | Running 🟢 |
+
+### What's New
+- Instant disposable email generation
+- Real-time incoming email notifications
+- 1-tap OTP verification code copy
+- Anti-abuse limits (60s cooldown, 1h expiry)
+- Ecosystem integration for {CHANNEL_USERNAME}
+
+*Ready for incoming requests.*"""
+
+async def send_rich_restart_notification(bot: Bot):
+    """Sends clean rich restart card to owner and optional log channel."""
+    rich_md = build_rich_restart_markdown()
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendRichMessage"
+
+    # 1. Send to Owner
+    if OWNER_ID:
+        try:
+            payload = {"chat_id": OWNER_ID, "rich_message": {"markdown": rich_md}}
+            if HTTP_SESSION:
+                async with HTTP_SESSION.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    data = await resp.json()
+                    if data.get("ok"):
+                        print(f"[restart] Restart notification sent to owner ({OWNER_ID})")
+        except Exception as e:
+            print(f"[restart] Notice: Could not send restart notification to owner: {e}")
+
+    # 2. Send to Log Channel (if configured)
+    if LOG_CHANNEL_ID:
+        try:
+            payload = {"chat_id": LOG_CHANNEL_ID, "rich_message": {"markdown": rich_md}}
+            if HTTP_SESSION:
+                async with HTTP_SESSION.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    print(f"[log_channel] Restart log sent to channel: {LOG_CHANNEL_ID}")
+        except Exception as e:
+            print(f"[log_channel] Notice: Could not send log to channel: {e}")
+
 def build_main_keyboard(unread_count: int = 0) -> types.InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     inbox_label = f"🔄 Check Inbox ({unread_count})" if unread_count > 0 else "🔄 Refresh Inbox"
@@ -59,7 +106,6 @@ async def format_mailbox_card(mailbox: dict) -> tuple[str, types.InlineKeyboardM
     exp_dt = datetime.fromisoformat(mailbox["expires_at"])
     rem_minutes = max(0, int((exp_dt - now).total_seconds() // 60))
     
-    # Check current message count
     unread = 0
     if mail_service and mailbox.get("token"):
         msgs = await mail_service.get_messages(mailbox["token"])
@@ -83,7 +129,6 @@ async def cmd_start(message: types.Message):
     mailbox = await db.get_user_mailbox(user_id)
     
     if not mailbox:
-        # Check cooldown
         can_gen, wait_s = await db.can_generate_new(user_id, RATE_LIMIT_SECONDS)
         if not can_gen:
             await message.reply(
@@ -116,7 +161,6 @@ async def cmd_new(message: types.Message):
         )
         return
 
-    # Delete old mailbox if exists
     old_box = await db.get_user_mailbox(user_id)
     if old_box and old_box.get("token") and old_box.get("account_id"):
         await mail_service.delete_account(old_box["token"], old_box["account_id"])
@@ -265,7 +309,6 @@ async def cb_read_email(callback: types.CallbackQuery):
     body_text = detail.get("text") or "No text content."
     otp_code = extract_verification_code(subject, body_text)
 
-    # Trim body if too long for Telegram message limit
     trimmed_body = body_text[:2500] if len(body_text) > 2500 else body_text
 
     builder = InlineKeyboardBuilder()
@@ -343,10 +386,8 @@ async def auto_email_listener_loop(bot: Bot):
                     if not msg_id:
                         continue
 
-                    # Check if already notified
                     already_seen = await db.is_message_recorded(msg_id)
                     if not already_seen:
-                        # Fetch full detail
                         detail = await mail_service.get_message_detail(token, msg_id)
                         if not detail:
                             continue
@@ -357,10 +398,8 @@ async def auto_email_listener_loop(bot: Bot):
                         body_text = detail.get("text") or ""
                         otp_code = extract_verification_code(subject, body_text)
 
-                        # Record in database
                         await db.record_message(msg_id, user_id, sender, subject, otp_code)
 
-                        # Build push notification
                         builder = InlineKeyboardBuilder()
                         if otp_code:
                             builder.row(types.InlineKeyboardButton(text=f"🔑 Copy OTP: {otp_code}", callback_data=f"copy_code:{otp_code}"))
@@ -407,6 +446,9 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     runner = await start_web_server()
     await bot.delete_webhook(drop_pending_updates=True)
+
+    # Send clean rich restart card to owner (and log channel if set)
+    await send_rich_restart_notification(bot)
 
     # Launch background email listener
     asyncio.create_task(auto_email_listener_loop(bot))
