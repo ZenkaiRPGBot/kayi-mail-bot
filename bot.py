@@ -15,7 +15,7 @@ from aiogram.types import (
     BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 )
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
+from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramNetworkError
 
 from config import (
     BOT_TOKEN, OWNER_ID, LOG_CHANNEL_ID, BOT_START_TIME,
@@ -360,6 +360,26 @@ async def send_restart_notification(bot: Bot):
     if not OWNER_ID:
         return
 
+    reason_file = os.path.join(os.path.dirname(__file__), "restart_reason.txt")
+    has_reason = os.path.exists(reason_file)
+
+    current_commit = ""
+    try:
+        import subprocess
+        current_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            text=True, stderr=subprocess.DEVNULL
+        ).strip()
+    except Exception:
+        pass
+
+    last_notified = await db.get_state("last_notified_commit")
+
+    # If this is an automatic container reconnect/resume and no new commit was deployed, skip broadcast
+    if not has_reason and current_commit and last_notified == current_commit:
+        print("[restart] Container reconnected: commit already notified. Suppressing duplicate alert.")
+        return
+
     changes = get_latest_changes()
     changes_formatted = "\n".join(f"• {html.escape(c)}" for c in changes)
     now_str = datetime.now(IST).strftime("%I:%M %p IST · %b %d")
@@ -384,6 +404,9 @@ async def send_restart_notification(bot: Bot):
             print(f"[restart] Sent clean restart notification to {chat_id}")
         except Exception as e:
             print(f"[restart] Could not notify {chat_id}: {e}")
+
+    if current_commit:
+        await db.set_state("last_notified_commit", current_commit)
 
 # ==============================================================================
 # COMMAND HANDLERS
@@ -1069,7 +1092,23 @@ async def main():
 
     print(f"{BRAND_NAME} Bot active with Apple-inspired UI and adaptive scheduler.")
     try:
-        await dp.start_polling(bot)
+        retry_delay = 2
+        while True:
+            try:
+                print(f"[{BRAND_NAME}] Polling Telegram updates...")
+                await dp.start_polling(bot, handle_signals=False)
+                break
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                print(f"[{BRAND_NAME}] Polling stopped safely.")
+                break
+            except (TelegramNetworkError, aiohttp.ClientError, asyncio.TimeoutError) as net_err:
+                print(f"[{BRAND_NAME}] Network hiccup: {net_err}. Resuming in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(int(retry_delay * 1.5) + 1, 30)
+            except Exception as e:
+                print(f"[{BRAND_NAME}] Polling error: {e}. Resuming in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(int(retry_delay * 1.5) + 1, 30)
     finally:
         if HTTP_SESSION and not HTTP_SESSION.closed:
             await HTTP_SESSION.close()

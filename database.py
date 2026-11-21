@@ -72,6 +72,14 @@ async def init_db():
             )
         """)
 
+        # Bot state table (tracks deployed commits, settings, etc.)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS bot_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+
         # Performance Indexes
         await db.execute("CREATE INDEX IF NOT EXISTS idx_mailboxes_user_status ON mailboxes (user_id, status);")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_mailboxes_expires ON mailboxes (expires_at, status);")
@@ -386,3 +394,16 @@ async def get_bot_statistics() -> dict:
             "total_messages": total_messages,
             "total_otps": total_otps
         }
+
+async def get_state(key: str) -> str | None:
+    """Retrieves a persistent key-value configuration state."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT value FROM bot_state WHERE key = ?", (key,)) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else None
+
+async def set_state(key: str, value: str):
+    """Sets a persistent key-value configuration state."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)", (key, value))
+        await db.commit()

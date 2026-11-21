@@ -10,22 +10,24 @@ async def handle_health(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "service": "kayi-mail-bot"})
 
 async def ping_self_loop():
-    """Periodically sends an HTTP request to keep Render service awake (every 10 minutes)."""
+    """Periodically sends an HTTP request to keep Render service awake (every 4 minutes)."""
     if not PING_URL:
         print("[keep_alive] No PING_URL configured. Self-ping loop disabled.")
         return
         
-    print(f"[keep_alive] Self-ping active! Target: {PING_URL} (every 10 minutes)")
-    await asyncio.sleep(30)
+    target_url = PING_URL.rstrip("/") + "/health"
+    print(f"[keep_alive] Self-ping active! Target: {target_url} (every 4 minutes)")
+    await asyncio.sleep(20)
     
-    async with aiohttp.ClientSession() as session:
+    headers = {"User-Agent": "KayiMail-KeepAlive/1.0"}
+    async with aiohttp.ClientSession(headers=headers) as session:
         while True:
             try:
-                async with session.get(PING_URL, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                async with session.get(target_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     print(f"[keep_alive] Self-ping status: {resp.status}")
             except Exception as e:
                 print(f"[keep_alive] Self-ping failed: {e}")
-            await asyncio.sleep(600)
+            await asyncio.sleep(240)
 
 async def start_web_server():
     """Starts the aiohttp web server and the self-ping task."""
