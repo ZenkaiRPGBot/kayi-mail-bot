@@ -286,17 +286,24 @@ async def send_welcome_screen(bot: Bot, chat_id: int):
                 reply_markup=markup,
                 supports_streaming=True
             )
+            print(f"[welcome] START_CINEMATIC_SUCCESS chat_id={chat_id}")
             return
         except Exception as e:
-            print(f"[welcome] Video delivery failed for chat {chat_id} ({type(e).__name__}: {e}). Falling back to text.")
+            print(f"[welcome] START_CINEMATIC_FAILURE chat_id={chat_id} error={type(e).__name__}: {e}")
+    else:
+        print(f"[welcome] START_CINEMATIC_FAILURE chat_id={chat_id} error=NO_FILE_ID_CONFIGURED")
 
     # Graceful fallback: text-only welcome message with identical keyboard
-    await bot.send_message(
-        chat_id=chat_id,
-        text=WELCOME_CAPTION,
-        parse_mode=ParseMode.HTML,
-        reply_markup=markup
-    )
+    try:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=WELCOME_CAPTION,
+            parse_mode=ParseMode.HTML,
+            reply_markup=markup
+        )
+        print(f"[welcome] START_TEXT_FALLBACK chat_id={chat_id}")
+    except Exception as fb_err:
+        print(f"[welcome] START_TEXT_FALLBACK_FAILURE chat_id={chat_id} error={type(fb_err).__name__}: {fb_err}")
 
 async def edit_or_send_screen(
     callback: types.CallbackQuery,
@@ -538,6 +545,7 @@ async def cmd_start(message: types.Message, bot: Bot | None = None):
         await send_welcome_screen(bot, user_id)
         return
 
+    print(f"[welcome] START_ACTIVE_MAILBOX user_id={user_id} mailbox_id={mailbox.get('id')}")
     text, markup = await render_home_card(user_id)
     await message.reply(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
@@ -1277,10 +1285,11 @@ async def main():
     print(f"{BRAND_NAME} Bot active with Apple-inspired UI and adaptive scheduler.")
     try:
         retry_delay = 2
+        handle_signals = (sys.platform != "win32")
         while True:
             try:
-                print(f"[{BRAND_NAME}] Polling Telegram updates...")
-                await dp.start_polling(bot, handle_signals=False)
+                print(f"[{BRAND_NAME}] Polling Telegram updates (handle_signals={handle_signals})...")
+                await dp.start_polling(bot, handle_signals=handle_signals)
                 break
             except (asyncio.CancelledError, KeyboardInterrupt):
                 print(f"[{BRAND_NAME}] Polling stopped safely.")
