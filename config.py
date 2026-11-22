@@ -17,6 +17,13 @@ LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID", "").strip()
 # Branding & Ecosystem
 BRAND_NAME = "Kayi Mail"
 COMMUNITY_URL = "https://t.me/KayiBots"
+DEVELOPER_URL = "https://t.me/qouba"
+
+# Cinematic Media Configuration
+WELCOME_VIDEO_FILE_ID = os.getenv(
+    "WELCOME_VIDEO_FILE_ID",
+    "BAACAgUAAyEGAAMBC_YZTwADOmsCgw8SEsNq8ClfmT39BUYkWNtLAAIfIQACfxYYVOgguKK11eiwPQQ"
+).strip()
 
 # Mailbox Lifecycle & Limits (Spec v1.0)
 DEFAULT_LIFETIME_MINUTES = 60          # 60m default mailbox lifetime

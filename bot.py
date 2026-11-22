@@ -19,7 +19,8 @@ from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, Teleg
 
 from config import (
     BOT_TOKEN, OWNER_ID, LOG_CHANNEL_ID, BOT_START_TIME,
-    BRAND_NAME, COMMUNITY_URL, INBOX_PAGE_SIZE,
+    BRAND_NAME, COMMUNITY_URL, DEVELOPER_URL, INBOX_PAGE_SIZE,
+    WELCOME_VIDEO_FILE_ID,
     INTERVAL_NEW_BOX, INTERVAL_VERIFY_WINDOW, INTERVAL_ACTIVE,
     INTERVAL_IDLE_15M, INTERVAL_IDLE_30M,
     RENDER_EMAIL, RENDER_SERVICE_NAME, RENDER_REPO,
@@ -93,19 +94,56 @@ async def measure_gateway_latency(bot: Bot) -> float:
     return (time.perf_counter() - t0) * 1000.0
 
 # ==============================================================================
-# UI KEYBOARD BUILDERS (Clean, Apple-inspired, Telegram Bot API 10.x compliant)
+# UI STRINGS & KEYBOARD BUILDERS (Cinematic, Modern, Telegram Bot API compliant)
 # ==============================================================================
+
+WELCOME_CAPTION = (
+    "<b>Welcome to Kayi Mail</b>\n\n"
+    "Your temporary email, ready in seconds.\n\n"
+    "Create disposable email addresses and receive messages and verification codes directly in Telegram.\n\n"
+    "✦ Instant email address creation\n"
+    "✦ Automatic email and OTP notifications\n"
+    "✦ 60-minute inbox, extendable up to 120 minutes\n\n"
+    "<i>Choose an option below to get started.</i>"
+)
+
+HELP_TEXT = (
+    "<b>Kayi Mail — Help & Guide</b> 📖\n\n"
+    "<b>Creating an Address:</b>\n"
+    "Tap <b>Create Email Address</b> for an instant inbox, or choose a custom domain.\n\n"
+    "<b>Receiving Emails:</b>\n"
+    "Incoming emails and OTP verification codes are delivered to you automatically with real-time push alerts.\n\n"
+    "<b>Copying Verification Codes:</b>\n"
+    "When an OTP code is detected, a one-tap copy button is provided for instant use.\n\n"
+    "<b>Lifetime & Extension:</b>\n"
+    "• Active for <b>60 minutes</b> by default.\n"
+    "• Extendable up to <b>120 minutes</b> (+30 min per extension).\n"
+    "• Inboxes expire automatically after inactivity.\n\n"
+    "<b>Deleting an Address:</b>\n"
+    "You can delete your active address anytime from the dashboard."
+)
 
 def build_welcome_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="Create Address", callback_data="new:confirm:default", style="success")
+            InlineKeyboardButton(text="✉️ Create Email Address", callback_data="new:confirm:default", style="success")
         ],
         [
-            InlineKeyboardButton(text="Choose Domain", callback_data="domain:menu", style="primary")
+            InlineKeyboardButton(text="🌐 Choose Domain", callback_data="domain:menu", style="primary")
         ],
         [
-            InlineKeyboardButton(text="Community", url=COMMUNITY_URL)
+            InlineKeyboardButton(text="❔ Help", callback_data="help:main"),
+            InlineKeyboardButton(text="📢 Updates", url=COMMUNITY_URL)
+        ],
+        [
+            InlineKeyboardButton(text="👨‍💻 Developer", url=DEVELOPER_URL)
+        ]
+    ])
+
+def build_help_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="◀️ Back to Home", callback_data="home")
         ]
     ])
 
@@ -229,19 +267,78 @@ def build_empty_inbox_keyboard() -> InlineKeyboardMarkup:
     ])
 
 # ==============================================================================
-# UI CARD RENDERERS
+# UI CARD RENDERERS & SCREEN DISPATCHERS
 # ==============================================================================
+
+async def send_welcome_screen(bot: Bot, chat_id: int):
+    """
+    Sends the cinematic welcome screen using cached Telegram video file_id.
+    Falls back gracefully to a text message if video sending fails.
+    """
+    markup = build_welcome_keyboard()
+    if WELCOME_VIDEO_FILE_ID:
+        try:
+            await bot.send_video(
+                chat_id=chat_id,
+                video=WELCOME_VIDEO_FILE_ID,
+                caption=WELCOME_CAPTION,
+                parse_mode=ParseMode.HTML,
+                reply_markup=markup,
+                supports_streaming=True
+            )
+            return
+        except Exception as e:
+            print(f"[welcome] Video delivery failed for chat {chat_id} ({type(e).__name__}: {e}). Falling back to text.")
+
+    # Graceful fallback: text-only welcome message with identical keyboard
+    await bot.send_message(
+        chat_id=chat_id,
+        text=WELCOME_CAPTION,
+        parse_mode=ParseMode.HTML,
+        reply_markup=markup
+    )
+
+async def edit_or_send_screen(
+    callback: types.CallbackQuery,
+    text: str,
+    markup: InlineKeyboardMarkup | None = None,
+    allow_caption: bool = True
+):
+    """
+    Safely edits the current callback message regardless of whether
+    it is a video/photo/media message or a standard text message.
+    """
+    is_media = bool(callback.message.video or callback.message.photo or callback.message.animation)
+    if is_media and allow_caption and len(text) <= 1024:
+        try:
+            await callback.message.edit_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=markup)
+            return
+        except TelegramBadRequest as e:
+            if "message is not modified" in str(e).lower():
+                return
+
+    # If media but cannot/should not be caption, or editing failed:
+    if is_media:
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except TelegramBadRequest:
+                pass
+        await callback.message.answer(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    else:
+        try:
+            await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+        except TelegramBadRequest as e:
+            if "message is not modified" in str(e).lower():
+                return
+            await callback.message.answer(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 async def render_home_card(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     mailbox = await db.get_active_mailbox(user_id)
     if not mailbox:
-        welcome_text = (
-            f"<b>Welcome to {BRAND_NAME}</b>\n"
-            "A private temporary inbox for quick signups and verification codes.\n\n"
-            "Your address stays active for 60 minutes.\n"
-            "Tap below to create your first inbox."
-        )
-        return welcome_text, build_welcome_keyboard()
+        return WELCOME_CAPTION, build_welcome_keyboard()
 
     now = datetime.now(timezone.utc)
     exp_dt = datetime.fromisoformat(mailbox["expires_at"])
@@ -431,11 +528,24 @@ async def send_restart_notification(bot: Bot):
 
 @dp.message(Command("start"))
 @dp.message(Command("mail"))
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, bot: Bot | None = None):
+    if bot is None:
+        bot = message.bot
     user_id = message.from_user.id
     await db.touch_user(user_id)
+    mailbox = await db.get_active_mailbox(user_id)
+    if not mailbox:
+        await send_welcome_screen(bot, user_id)
+        return
+
     text, markup = await render_home_card(user_id)
     await message.reply(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    user_id = message.from_user.id
+    await db.touch_user(user_id)
+    await message.reply(HELP_TEXT, parse_mode=ParseMode.HTML, reply_markup=build_help_keyboard())
 
 @dp.message(Command("inbox"))
 async def cmd_inbox(message: types.Message):
@@ -574,14 +684,47 @@ async def cmd_restart(message: types.Message, bot: Bot):
 # ==============================================================================
 
 @dp.callback_query(F.data == "home")
-async def cb_home(callback: types.CallbackQuery):
+async def cb_home(callback: types.CallbackQuery, bot: Bot | None = None):
+    if bot is None:
+        bot = callback.bot
     user_id = callback.from_user.id
     await db.touch_user(user_id)
+    mailbox = await db.get_active_mailbox(user_id)
+    if not mailbox:
+        if callback.message.video:
+            try:
+                await callback.message.edit_caption(
+                    caption=WELCOME_CAPTION,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=build_welcome_keyboard()
+                )
+                await callback.answer()
+                return
+            except TelegramBadRequest as e:
+                if "message is not modified" in str(e).lower():
+                    await callback.answer()
+                    return
+
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except TelegramBadRequest:
+                pass
+        await send_welcome_screen(bot, user_id)
+        await callback.answer()
+        return
+
     text, markup = await render_home_card(user_id)
-    try:
-        await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
-    except TelegramBadRequest:
-        pass
+    await edit_or_send_screen(callback, text, markup, allow_caption=False)
+    await callback.answer()
+
+@dp.callback_query(F.data == "help:main")
+async def cb_help_main(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    await db.touch_user(user_id)
+    await edit_or_send_screen(callback, HELP_TEXT, build_help_keyboard(), allow_caption=True)
     await callback.answer()
 
 @dp.callback_query(F.data == "ping:refresh")
@@ -638,7 +781,7 @@ async def cb_domain_menu(callback: types.CallbackQuery):
         "• <b>euploading.com</b> — Mail.tm standard\n\n"
         "<i>Selecting a domain will generate a fresh address immediately.</i>"
     )
-    await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=build_domain_selection_keyboard())
+    await edit_or_send_screen(callback, text, build_domain_selection_keyboard(), allow_caption=True)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("domain:set:"))
@@ -655,10 +798,11 @@ async def cb_domain_set(callback: types.CallbackQuery):
     await callback.answer(f"Creating inbox on @{domain}...")
     new_data = await mail_service.create_mailbox(domain)
     if not new_data:
-        await callback.message.edit_text(
+        await edit_or_send_screen(
+            callback,
             f"<b>Notice</b>\nUnable to initialize inbox on <code>{domain}</code> right now. Please select another domain.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=build_domain_selection_keyboard()
+            build_domain_selection_keyboard(),
+            allow_caption=True
         )
         return
 
@@ -680,7 +824,7 @@ async def cb_domain_set(callback: types.CallbackQuery):
     )
 
     text, markup = await render_home_card(user_id)
-    await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    await edit_or_send_screen(callback, text, markup, allow_caption=False)
 
 @dp.callback_query(F.data == "refresh")
 async def cb_refresh(callback: types.CallbackQuery):
@@ -801,10 +945,11 @@ async def cb_new_confirm(callback: types.CallbackQuery):
     await callback.answer("Creating address...")
     new_data = await mail_service.create_mailbox(DEFAULT_DOMAIN)
     if not new_data:
-        await callback.message.edit_text(
+        await edit_or_send_screen(
+            callback,
             "<b>Service Notice</b>\nEmail service is temporarily unavailable. Please try again shortly.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Retry", callback_data="new:confirm:default", style="success")], [InlineKeyboardButton(text="Cancel", callback_data="home", style="danger")]])
+            InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Retry", callback_data="new:confirm:default", style="success")], [InlineKeyboardButton(text="Cancel", callback_data="home", style="danger")]]),
+            allow_caption=True
         )
         return
 
@@ -825,7 +970,7 @@ async def cb_new_confirm(callback: types.CallbackQuery):
         new_data["token"]
     )
     text, markup = await render_home_card(user_id)
-    await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    await edit_or_send_screen(callback, text, markup, allow_caption=False)
 
 @dp.callback_query(F.data == "extend:request")
 async def cb_extend(callback: types.CallbackQuery):
@@ -858,7 +1003,9 @@ async def cb_delete_request(callback: types.CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data == "delete:confirm")
-async def cb_delete_confirm(callback: types.CallbackQuery):
+async def cb_delete_confirm(callback: types.CallbackQuery, bot: Bot | None = None):
+    if bot is None:
+        bot = callback.bot
     user_id = callback.from_user.id
     deleted_box = await db.delete_mailbox(user_id)
     if deleted_box:
@@ -869,8 +1016,25 @@ async def cb_delete_confirm(callback: types.CallbackQuery):
         ))
 
     await callback.answer("Address deleted.")
-    text, markup = await render_home_card(user_id)
-    await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    if callback.message.video:
+        try:
+            await callback.message.edit_caption(
+                caption=WELCOME_CAPTION,
+                parse_mode=ParseMode.HTML,
+                reply_markup=build_welcome_keyboard()
+            )
+            return
+        except TelegramBadRequest:
+            pass
+
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest:
+            pass
+    await send_welcome_screen(bot, user_id)
 
 @dp.callback_query(F.data.startswith("read:"))
 async def cb_read_email(callback: types.CallbackQuery):

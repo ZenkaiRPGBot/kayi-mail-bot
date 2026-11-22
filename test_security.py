@@ -160,10 +160,16 @@ async def run_tests():
         user_msg = MagicMock()
         user_msg.from_user.id = 123456789
         user_msg.reply = AsyncMock()
+        mock_bot = MagicMock()
+        mock_bot.send_video = AsyncMock()
+        mock_bot.send_message = AsyncMock()
+        user_msg.bot = mock_bot
 
-        await bot.cmd_start(user_msg)
-        assert user_msg.reply.called
-        assert "Welcome to" in str(user_msg.reply.call_args)
+        # When no mailbox exists, cmd_start dispatches the cinematic welcome screen
+        await bot.cmd_start(user_msg, bot=mock_bot)
+        assert mock_bot.send_video.called or mock_bot.send_message.called
+        sent_call = mock_bot.send_video.call_args or mock_bot.send_message.call_args
+        assert "Welcome to" in str(sent_call)
 
         await bot.cmd_inbox(user_msg)
         assert user_msg.reply.called
