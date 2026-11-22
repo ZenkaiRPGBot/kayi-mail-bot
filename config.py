@@ -19,6 +19,12 @@ BRAND_NAME = "Kayi Mail"
 COMMUNITY_URL = "https://t.me/KayiBots"
 DEVELOPER_URL = "https://t.me/qouba"
 
+# Mandatory Channel Subscription (FSub)
+FSUB_CHANNEL = os.getenv("FSUB_CHANNEL", "@KayiBots").strip()
+FSUB_CHANNEL_URL = os.getenv("FSUB_CHANNEL_URL", COMMUNITY_URL).strip()
+FSUB_CACHE_TTL = int(os.getenv("FSUB_CACHE_TTL", "45"))
+FSUB_TIMEOUT = float(os.getenv("FSUB_TIMEOUT", "5.0"))
+
 # Cinematic Media Configuration
 WELCOME_VIDEO_FILE_ID = os.getenv(
     "WELCOME_VIDEO_FILE_ID",

@@ -29,8 +29,12 @@ from config import (
 import database as db
 from mail_service import MailService, extract_verification_code, DEFAULT_DOMAIN, PROVIDERS
 from keep_alive import start_web_server
+from fsub import FSubMiddleware, check_channel_membership
 
 dp = Dispatcher()
+dp.message.outer_middleware(FSubMiddleware())
+dp.callback_query.outer_middleware(FSubMiddleware())
+
 HTTP_SESSION: aiohttp.ClientSession | None = None
 mail_service: MailService | None = None
 
@@ -315,7 +319,11 @@ async def edit_or_send_screen(
     Safely edits the current callback message regardless of whether
     it is a video/photo/media message or a standard text message.
     """
-    is_media = bool(callback.message.video or callback.message.photo or callback.message.animation)
+    is_media = bool(
+        getattr(callback.message, "video", None) or
+        getattr(callback.message, "photo", None) or
+        getattr(callback.message, "animation", None)
+    )
     if is_media and allow_caption and len(text) <= 1024:
         try:
             await callback.message.edit_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=markup)
@@ -690,6 +698,50 @@ async def cmd_restart(message: types.Message, bot: Bot):
 # ==============================================================================
 # CALLBACK QUERY HANDLERS
 # ==============================================================================
+
+@dp.callback_query(F.data == "fsub:verify")
+async def cb_fsub_verify(callback: types.CallbackQuery, bot: Bot | None = None):
+    if bot is None:
+        bot = callback.bot
+    user_id = callback.from_user.id
+    await db.touch_user(user_id)
+
+    # 1. Immediate acknowledgment
+    await callback.answer("Checking membership...")
+
+    # 2. Re-check membership live bypassing cache
+    is_member, status = await check_channel_membership(
+        bot=bot,
+        user_id=user_id,
+        bypass_cache=True
+    )
+
+    if is_member:
+        # 3. Transition to correct UI
+        mailbox = await db.get_active_mailbox(user_id)
+        if not mailbox:
+            try:
+                await callback.message.delete()
+            except (TelegramBadRequest, Exception):
+                try:
+                    await callback.message.edit_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+            await send_welcome_screen(bot, user_id)
+        else:
+            text, markup = await render_home_card(user_id)
+            await edit_or_send_screen(callback, text, markup, allow_caption=False)
+    else:
+        if status in ("left", "kicked") or (status == "restricted" and not is_member):
+            await callback.answer(
+                "You haven't joined @KayiBots yet. Please join the channel and tap I've Joined.",
+                show_alert=True
+            )
+        else:
+            await callback.answer(
+                "Membership check unavailable right now. Please try again shortly.",
+                show_alert=True
+            )
 
 @dp.callback_query(F.data == "home")
 async def cb_home(callback: types.CallbackQuery, bot: Bot | None = None):
