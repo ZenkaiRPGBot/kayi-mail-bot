@@ -33,6 +33,23 @@ dp = Dispatcher()
 HTTP_SESSION: aiohttp.ClientSession | None = None
 mail_service: MailService | None = None
 
+def is_owner(user_id: int | None) -> bool:
+    """Strict fail-closed owner authorization verification."""
+    return bool(OWNER_ID and user_id and user_id == OWNER_ID)
+
+def mask_email(email_str: str) -> str:
+    """Masks email address to protect privacy (e.g. 230***@domain.com)."""
+    if not email_str or "@" not in email_str:
+        return "[configured]"
+    parts = email_str.split("@", 1)
+    user_part = parts[0]
+    domain_part = parts[1]
+    if len(user_part) <= 3:
+        masked_user = user_part[0] + "***"
+    else:
+        masked_user = user_part[:3] + "***"
+    return f"{masked_user}@{domain_part}"
+
 def format_relative_time(iso_str: str) -> str:
     """Formats ISO datetime string into readable relative or IST clock time."""
     try:
@@ -271,7 +288,7 @@ async def build_usage_card_text(bot: Bot) -> tuple[str, InlineKeyboardMarkup]:
         f"<b>{BRAND_NAME} — Service & Host Metrics</b>\n\n"
         "<b>Host & Account:</b>\n"
         "• <b>Cloud:</b> Render (Frankfurt, EU-Central)\n"
-        f"• <b>Account Email:</b> <code>{html.escape(RENDER_EMAIL)}</code>\n"
+        f"• <b>Account Email:</b> <code>{html.escape(mask_email(RENDER_EMAIL))}</code>\n"
         f"• <b>Service Name:</b> <code>{html.escape(RENDER_SERVICE_NAME)}</code>\n"
         f"• <b>Repository:</b> <code>{html.escape(RENDER_REPO)}</code>\n\n"
         "<b>Monthly Free Usage (Render Limit: 750h):</b>\n"
@@ -496,7 +513,7 @@ async def cmd_ping(message: types.Message, bot: Bot):
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message, bot: Bot):
-    if message.from_user.id != OWNER_ID:
+    if not is_owner(message.from_user.id if message.from_user else None):
         await message.reply("Access restricted to bot owner.")
         return
 
@@ -523,7 +540,7 @@ async def cmd_stats(message: types.Message, bot: Bot):
 @dp.message(Command("render"))
 @dp.message(Command("status"))
 async def cmd_usage(message: types.Message, bot: Bot):
-    if message.from_user.id != OWNER_ID:
+    if not is_owner(message.from_user.id if message.from_user else None):
         await message.reply("Access restricted to bot owner.")
         return
 
@@ -532,7 +549,7 @@ async def cmd_usage(message: types.Message, bot: Bot):
 
 @dp.message(Command("restart"))
 async def cmd_restart(message: types.Message, bot: Bot):
-    if message.from_user.id != OWNER_ID:
+    if not is_owner(message.from_user.id if message.from_user else None):
         await message.reply("Access denied. Owner only.")
         return
 
@@ -576,8 +593,7 @@ async def cb_ping_refresh(callback: types.CallbackQuery, bot: Bot):
     uptime_str = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s"
 
     markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Refresh Ping", callback_data="ping:refresh", style="primary")],
-        [InlineKeyboardButton(text="Service Usage", callback_data="usage:show", style="success")]
+        [InlineKeyboardButton(text="Refresh Ping", callback_data="ping:refresh")]
     ])
 
     text = (
@@ -596,6 +612,10 @@ async def cb_ping_refresh(callback: types.CallbackQuery, bot: Bot):
 @dp.callback_query(F.data == "usage:refresh")
 @dp.callback_query(F.data == "usage:show")
 async def cb_usage_refresh(callback: types.CallbackQuery, bot: Bot):
+    if not is_owner(callback.from_user.id if callback.from_user else None):
+        await callback.answer("Access restricted to bot owner.", show_alert=True)
+        return
+
     text, markup = await build_usage_card_text(bot)
     try:
         await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
