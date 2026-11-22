@@ -8,7 +8,7 @@ import asyncio
 from datetime import datetime, timezone
 import aiohttp
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton, CopyTextButton,
@@ -29,7 +29,10 @@ from config import (
 import database as db
 from mail_service import MailService, extract_verification_code, DEFAULT_DOMAIN, PROVIDERS
 from keep_alive import start_web_server
-from fsub import FSubMiddleware, check_channel_membership
+from fsub import (
+    FSubMiddleware, check_channel_membership,
+    set_pending_start_param, get_and_clear_pending_start_param
+)
 
 dp = Dispatcher()
 dp.message.outer_middleware(FSubMiddleware())
@@ -618,11 +621,25 @@ async def send_restart_notification(bot: Bot):
 
 @dp.message(Command("start"))
 @dp.message(Command("mail"))
-async def cmd_start(message: types.Message, bot: Bot | None = None):
+async def cmd_start(message: types.Message, bot: Bot | None = None, command: CommandObject | None = None):
     if bot is None:
         bot = message.bot
     user_id = message.from_user.id
     await db.touch_user(user_id)
+
+    # Check for /start help deep-link parameter
+    args = ""
+    if command and command.args:
+        args = command.args.strip()
+    elif message.text:
+        parts = message.text.strip().split(maxsplit=1)
+        if len(parts) > 1:
+            args = parts[1].strip()
+
+    if args.lower() == "help":
+        await cmd_help(message)
+        return
+
     mailbox = await db.get_active_mailbox(user_id)
     if not mailbox:
         await send_welcome_screen(bot, user_id)
@@ -792,6 +809,23 @@ async def cb_fsub_verify(callback: types.CallbackQuery, bot: Bot | None = None):
     )
 
     if is_member:
+        # Check if user arrived via /start help deep-link
+        pending_param = get_and_clear_pending_start_param(user_id)
+        if pending_param == "help":
+            try:
+                await callback.message.delete()
+            except (TelegramBadRequest, Exception):
+                try:
+                    await callback.message.edit_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+            await callback.message.answer(
+                HELP_TEXT,
+                parse_mode=ParseMode.HTML,
+                reply_markup=build_help_keyboard()
+            )
+            return
+
         # 3. Transition to correct UI
         mailbox = await db.get_active_mailbox(user_id)
         if not mailbox:
