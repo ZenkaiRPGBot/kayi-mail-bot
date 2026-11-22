@@ -29,16 +29,17 @@ async def run_welcome_tests():
     assert "✦ Instant email address creation" in bot.WELCOME_CAPTION
     assert "✦ Automatic email and OTP notifications" in bot.WELCOME_CAPTION
     assert "✦ 60-minute inbox, extendable up to 120 minutes" in bot.WELCOME_CAPTION
+    assert "Need help? Use /help for instructions and feature guides." in bot.WELCOME_CAPTION
     assert "<i>Choose an option below to get started.</i>" in bot.WELCOME_CAPTION
     assert len(bot.WELCOME_CAPTION) < 1024, "Caption must fit within Telegram 1024-char limit"
     print("  [PASS] 2. Exact welcome caption validated (HTML format, formatting tags, length: %d chars)." % len(bot.WELCOME_CAPTION))
     passed += 1
 
-    # Test 3: Exact keyboard rows and button actions
+    # Test 3: Exact keyboard rows and button actions (Simplified 3-row layout without redundant Help button)
     total += 1
     kb = bot.build_welcome_keyboard()
     rows = kb.inline_keyboard
-    assert len(rows) == 4, f"Expected exactly 4 rows, got {len(rows)}"
+    assert len(rows) == 3, f"Expected exactly 3 rows, got {len(rows)}"
     
     # Row 1: [ ✉️ Create Email Address ] — green/success
     assert len(rows[0]) == 1
@@ -52,18 +53,13 @@ async def run_welcome_tests():
     assert rows[1][0].callback_data == "domain:menu"
     assert rows[1][0].style == "primary"
 
-    # Row 3: [ ❔ Help ] [ 📢 Updates ]
+    # Row 3: [ 📢 Updates ] [ 👨‍💻 Developer ]
     assert len(rows[2]) == 2
-    assert rows[2][0].text == "❔ Help"
-    assert rows[2][0].callback_data == "help:main"
-    assert rows[2][1].text == "📢 Updates"
-    assert rows[2][1].url == "https://t.me/KayiBots"
-
-    # Row 4: [ 👨‍💻 Developer ]
-    assert len(rows[3]) == 1
-    assert rows[3][0].text == "👨‍💻 Developer"
-    assert rows[3][0].url == "https://t.me/qouba"
-    print("  [PASS] 3. Exact 4-row colored inline keyboard verified with native styles & targets.")
+    assert rows[2][0].text == "📢 Updates"
+    assert rows[2][0].url == "https://t.me/KayiBots"
+    assert rows[2][1].text == "👨‍💻 Developer"
+    assert rows[2][1].url == "https://t.me/qouba"
+    print("  [PASS] 3. Exact 3-row colored inline keyboard verified with native styles & targets.")
     passed += 1
 
     # Test 4: /start with NO active mailbox (video delivery path)
@@ -129,7 +125,7 @@ async def run_welcome_tests():
     print("  [PASS] 6. Video delivery failure gracefully falls back to text welcome card.")
     passed += 1
 
-    # Test 7: Help functionality (/help command and help:main callback)
+    # Test 7: Help functionality (/help command, help:main, and subpage navigation)
     total += 1
     mock_msg_help = MagicMock()
     mock_msg_help.from_user.id = 555111
@@ -137,9 +133,18 @@ async def run_welcome_tests():
     with patch("database.touch_user", new=AsyncMock()):
         await bot.cmd_help(mock_msg_help)
         assert mock_msg_help.reply.called
-        assert "Kayi Mail — Help & Guide" in str(mock_msg_help.reply.call_args)
+        assert "Kayi Mail — Help Center" in str(mock_msg_help.reply.call_args)
+        # Verify section buttons are attached
+        reply_kb = mock_msg_help.reply.call_args[1].get("reply_markup") or mock_msg_help.reply.call_args[0][2]
+        cb_datas = [btn.callback_data for row in reply_kb.inline_keyboard for btn in row if btn.callback_data]
+        assert "help:sec:start" in cb_datas
+        assert "help:sec:manage" in cb_datas
+        assert "help:sec:reading" in cb_datas
+        assert "help:sec:privacy" in cb_datas
+        assert "help:sec:faq" in cb_datas
+        assert "home" in cb_datas
 
-    # Test callback on video message (caption edit)
+    # Test callback on video message (caption edit to help center)
     mock_cb_help = MagicMock()
     mock_cb_help.from_user.id = 555111
     mock_cb_help.message.video = MagicMock()
@@ -150,8 +155,27 @@ async def run_welcome_tests():
     with patch("database.touch_user", new=AsyncMock()):
         await bot.cb_help_main(mock_cb_help)
         assert mock_cb_help.message.edit_caption.called
-        assert "Kayi Mail — Help & Guide" in str(mock_cb_help.message.edit_caption.call_args)
-    print("  [PASS] 7. /help command and help:main callback work on text & video media.")
+        assert "Kayi Mail — Help Center" in str(mock_cb_help.message.edit_caption.call_args)
+
+    # Test subpage navigation (e.g. help:sec:privacy)
+    mock_cb_sec = MagicMock()
+    mock_cb_sec.from_user.id = 555111
+    mock_cb_sec.data = "help:sec:privacy"
+    mock_cb_sec.message.video = None
+    mock_cb_sec.message.photo = None
+    mock_cb_sec.message.animation = None
+    mock_cb_sec.message.edit_text = AsyncMock()
+    mock_cb_sec.answer = AsyncMock()
+    with patch("database.touch_user", new=AsyncMock()):
+        await bot.cb_help_section(mock_cb_sec)
+        assert mock_cb_sec.message.edit_text.called
+        assert "Mailbox Expiration & Privacy" in str(mock_cb_sec.message.edit_text.call_args)
+        # Verify back button points to help:main
+        sec_kb = mock_cb_sec.message.edit_text.call_args[1].get("reply_markup")
+        assert sec_kb.inline_keyboard[0][0].callback_data == "help:main"
+        assert sec_kb.inline_keyboard[0][0].text == "◀️ Back to Help"
+
+    print("  [PASS] 7. /help command, Help Center sections, and subpage navigation verified.")
     passed += 1
 
     # Test 8: Navigation from video Help back to Home (restores welcome caption & buttons)

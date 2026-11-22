@@ -308,12 +308,12 @@ async def run_fsub_test_suite():
         send_video_called = True
         assert video == config.WELCOME_VIDEO_FILE_ID
         assert "Welcome to Kayi Mail" in caption
-        assert len(reply_markup.inline_keyboard) == 4
+        assert len(reply_markup.inline_keyboard) == 3
 
     mock_bot.send_video = fake_send_video
     await bot_module.send_welcome_screen(mock_bot, USER_ID)
     assert send_video_called is True
-    print("  [PASS] 17. Cinematic welcome remains functional -> sends cached video with 4-row keyboard.")
+    print("  [PASS] 17. Cinematic welcome remains functional -> sends cached video with 3-row keyboard.")
 
     # --------------------------------------------------------------------------
     # Scenario 18: Video delivery failure fallback
@@ -326,7 +326,7 @@ async def run_fsub_test_suite():
         nonlocal send_text_fallback_called
         send_text_fallback_called = True
         assert "Welcome to Kayi Mail" in text
-        assert len(reply_markup.inline_keyboard) == 4
+        assert len(reply_markup.inline_keyboard) == 3
 
     mock_bot.send_video = failing_send_video
     mock_bot.send_message = fake_send_message

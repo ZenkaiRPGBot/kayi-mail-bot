@@ -92,9 +92,9 @@ async def run_regression_tests():
         fb_call = mock_bot_nofid.send_message.call_args
         # MUST send NEW caption and NEW keyboard
         assert "Your temporary email, ready in seconds" in fb_call.kwargs["text"]
-        assert len(fb_call.kwargs["reply_markup"].inline_keyboard) == 4
+        assert len(fb_call.kwargs["reply_markup"].inline_keyboard) == 3
         assert "A private temporary inbox" not in fb_call.kwargs["text"]
-        print("  [PASS] 4. Missing file_id falls back to NEW caption & 4-row keyboard (never old menu).")
+        print("  [PASS] 4. Missing file_id falls back to NEW caption & 3-row keyboard (never old menu).")
         passed += 1
     finally:
         bot.WELCOME_VIDEO_FILE_ID = orig_fid
@@ -113,7 +113,7 @@ async def run_regression_tests():
     assert mock_bot_err.send_message.called
     fb_call2 = mock_bot_err.send_message.call_args
     assert "Your temporary email, ready in seconds" in fb_call2.kwargs["text"]
-    assert len(fb_call2.kwargs["reply_markup"].inline_keyboard) == 4
+    assert len(fb_call2.kwargs["reply_markup"].inline_keyboard) == 3
     print("  [PASS] 5. Telegram video API failure logs diagnostics and sends NEW text fallback.")
     passed += 1
 
