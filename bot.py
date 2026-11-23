@@ -116,71 +116,44 @@ WELCOME_CAPTION = (
 )
 
 HELP_MAIN_TEXT = (
-    "<b>Kayi Mail — Help Center</b> 📖\n\n"
-    "Welcome to the Kayi Mail Help Center. Select a topic below to learn how to manage your temporary mailbox, receive verification codes, and protect your privacy.\n\n"
-    "• <b>Getting Started:</b> Create an address and basic workflow\n"
-    "• <b>Managing Mailbox:</b> Choose domains and check inbox\n"
-    "• <b>Emails & OTPs:</b> Real-time push alerts and 1-tap copy\n"
-    "• <b>Expiration & Privacy:</b> Timers, extensions, and data retention\n"
-    "• <b>Common Questions:</b> Frequently asked questions and tips\n\n"
-    "<i>Select a section below for details:</i>"
+    "<b>Kayi Mail — Help Center</b>\n\n"
+    "Create temporary email addresses and receive messages directly in Telegram.\n\n"
+    "Select a topic below to get started."
 )
 
 HELP_SECTIONS = {
     "start": (
-        "<b>Getting Started — Kayi Mail</b> 🚀\n\n"
-        "Kayi Mail provides disposable, anonymous email addresses directly inside Telegram.\n\n"
-        "<b>How to Create a Mailbox:</b>\n"
-        "1. Send <code>/start</code> or tap <b>Create Email Address</b>.\n"
-        "2. An active temporary address is generated instantly.\n"
-        "3. Copy the address using the <b>Copy Address</b> button.\n"
-        "4. Paste it into any website, app, or service requiring email verification.\n\n"
-        "<i>All incoming emails will be delivered automatically to your chat.</i>"
+        "<b>Getting Started</b>\n\n"
+        "Creating a temporary email address is simple.\n\n"
+        "✦ Use <b>Create Email Address</b> to generate a mailbox.\n\n"
+        "✦ Copy your new email address and use it wherever needed.\n\n"
+        "✦ Incoming emails will appear in your Telegram inbox.\n\n"
+        "You can also choose from the available domains before creating an address."
     ),
     "manage": (
-        "<b>Managing Your Mailbox</b> 📬\n\n"
-        "<b>Switching Domains:</b>\n"
-        "• Tap <b>Change Domain</b> to pick an alternate domain if a service blocks the default domain.\n"
-        "• Multiple high-reputation domains are supported via Guerrilla Mail and Mail.tm.\n\n"
-        "<b>Checking Your Inbox:</b>\n"
-        "• Send <code>/inbox</code> or tap <b>Open Inbox</b> on your dashboard.\n"
-        "• The inbox displays message sender, subject line, and arrival timestamp.\n\n"
-        "<b>Deleting a Mailbox:</b>\n"
-        "• Tap <b>Delete Address</b> on your dashboard to permanently erase the mailbox and all stored emails."
+        "<b>Managing Your Mailbox</b>\n\n"
+        "Manage your temporary email address using the bot's available controls.\n\n"
+        "✦ <b>Refresh Inbox</b> — Check for newly received messages.\n\n"
+        "✦ <b>Choose Domain</b> — Select an available email domain.\n\n"
+        "✦ <b>Extend Mailbox</b> — Extend your mailbox's lifetime when supported.\n\n"
+        "✦ <b>Delete Mailbox</b> — Remove your temporary mailbox.\n\n"
+        "Some controls may depend on your current mailbox status."
     ),
     "reading": (
-        "<b>Reading Emails & Verification Codes</b> 🔑\n\n"
-        "<b>Real-Time Push Alerts:</b>\n"
-        "When an incoming email arrives, Kayi Mail automatically sends a message card into this chat.\n\n"
-        "<b>Automatic OTP Detection:</b>\n"
-        "• If the email contains an OTP or verification code (e.g. <code>482910</code>), the bot extracts it automatically.\n"
-        "• A dedicated <b>Copy Code</b> button appears below the notification for 1-tap copying.\n\n"
-        "<b>Reading Full Messages:</b>\n"
-        "• Tap any email from your <code>/inbox</code> list to read the full body text and sender details."
+        "<b>Emails & Verification Codes</b>\n\n"
+        "Kayi Mail helps you access incoming messages without leaving Telegram.\n\n"
+        "✦ <b>Email Notifications</b> — Get notified when a new email arrives.\n\n"
+        "✦ <b>Verification Codes</b> — Supported codes are automatically detected and displayed.\n\n"
+        "✦ <b>Inbox</b> — Open received messages to view their contents.\n\n"
+        "<b>Note:</b> Verification code detection may not work with every email format."
     ),
     "privacy": (
-        "<b>Mailbox Expiration & Privacy</b> ⏳\n\n"
-        "<b>Inbox Lifetime:</b>\n"
-        "• Each new mailbox is active for <b>60 minutes</b> by default.\n"
-        "• Need more time? Tap <b>Extend +30m</b> to add 30 minutes.\n"
-        "• You can extend multiple times up to a maximum total lifetime of <b>120 minutes</b>.\n\n"
-        "<b>Automatic Expiration:</b>\n"
-        "• Expired mailboxes and their messages are permanently purged from the system.\n\n"
-        "<b>Privacy Guarantee:</b>\n"
-        "• No personal information or email registration required.\n"
-        "• Zero spam reaching your personal inbox.\n"
-        "• Messages are isolated and accessible only to your Telegram user ID."
-    ),
-    "faq": (
-        "<b>Common Questions & FAQ</b> ❓\n\n"
-        "<b>Can I send or reply to emails?</b>\n"
-        "No. Kayi Mail is strictly designed for receiving emails and verification codes.\n\n"
-        "<b>Can I restore an expired address?</b>\n"
-        "No. Once an address expires or is deleted, it is permanently closed for privacy.\n\n"
-        "<b>Why haven't I received my email?</b>\n"
-        "Some websites take 1–2 minutes to queue outbound verification emails. If it still doesn't arrive, try creating an address on a different domain.\n\n"
-        "<b>Are attachments supported?</b>\n"
-        "Text and HTML message contents are extracted safely. Executable attachments are dropped for security."
+        "<b>Limits & Privacy</b>\n\n"
+        "Temporary email addresses are intended for short-term use.\n\n"
+        "✦ <b>Expiration</b> — Mailboxes have a limited lifetime (60 minutes by default, extendable up to 120 minutes).\n\n"
+        "✦ <b>Availability</b> — Some websites may reject temporary email addresses.\n\n"
+        "✦ <b>Privacy</b> — Avoid using temporary mailboxes for sensitive accounts or important information.\n\n"
+        "<b>Important:</b> Do not use temporary email addresses for accounts you need to recover later."
     )
 }
 
@@ -203,27 +176,15 @@ def build_welcome_keyboard() -> InlineKeyboardMarkup:
 
 def build_help_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🚀 Getting Started", callback_data="help:sec:start"),
-            InlineKeyboardButton(text="📬 Managing Mailbox", callback_data="help:sec:manage")
-        ],
-        [
-            InlineKeyboardButton(text="🔑 Emails & OTPs", callback_data="help:sec:reading"),
-            InlineKeyboardButton(text="⏳ Expiration & Privacy", callback_data="help:sec:privacy")
-        ],
-        [
-            InlineKeyboardButton(text="❓ Common Questions", callback_data="help:sec:faq")
-        ],
-        [
-            InlineKeyboardButton(text="◀️ Back to Home", callback_data="home")
-        ]
+        [InlineKeyboardButton(text="Getting Started", callback_data="help:sec:start")],
+        [InlineKeyboardButton(text="Managing Your Mailbox", callback_data="help:sec:manage")],
+        [InlineKeyboardButton(text="Emails & Verification Codes", callback_data="help:sec:reading")],
+        [InlineKeyboardButton(text="Limits & Privacy", callback_data="help:sec:privacy")]
     ])
 
 def build_help_subpage_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="◀️ Back to Help", callback_data="help:main")
-        ]
+        [InlineKeyboardButton(text="← Back to Help", callback_data="help:main")]
     ])
 
 def build_help_keyboard() -> InlineKeyboardMarkup:

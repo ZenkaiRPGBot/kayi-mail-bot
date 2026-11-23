@@ -141,8 +141,6 @@ async def run_welcome_tests():
         assert "help:sec:manage" in cb_datas
         assert "help:sec:reading" in cb_datas
         assert "help:sec:privacy" in cb_datas
-        assert "help:sec:faq" in cb_datas
-        assert "home" in cb_datas
 
     # Test callback on video message (caption edit to help center)
     mock_cb_help = MagicMock()
@@ -169,11 +167,11 @@ async def run_welcome_tests():
     with patch("database.touch_user", new=AsyncMock()):
         await bot.cb_help_section(mock_cb_sec)
         assert mock_cb_sec.message.edit_text.called
-        assert "Mailbox Expiration & Privacy" in str(mock_cb_sec.message.edit_text.call_args)
+        assert "Limits & Privacy" in str(mock_cb_sec.message.edit_text.call_args)
         # Verify back button points to help:main
         sec_kb = mock_cb_sec.message.edit_text.call_args[1].get("reply_markup")
         assert sec_kb.inline_keyboard[0][0].callback_data == "help:main"
-        assert sec_kb.inline_keyboard[0][0].text == "◀️ Back to Help"
+        assert sec_kb.inline_keyboard[0][0].text == "← Back to Help"
 
     print("  [PASS] 7. /help command, Help Center sections, and subpage navigation verified.")
     passed += 1
