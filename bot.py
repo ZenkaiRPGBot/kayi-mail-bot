@@ -486,78 +486,54 @@ async def register_bot_commands(bot: Bot):
     except Exception as e:
         print(f"[commands] Failed to register commands: {e}")
 
-def get_latest_changes() -> list[str]:
-    """Retrieves recent changes from restart_reason.txt, git commit log, or fallback."""
+def _consume_restart_reason() -> str:
+    """Read and remove restart_reason.txt if an owner restart note was saved."""
     reason_file = os.path.join(os.path.dirname(__file__), "restart_reason.txt")
-    if os.path.exists(reason_file):
-        try:
-            with open(reason_file, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-            os.remove(reason_file)
-            if content:
-                return [line.strip("-•* ").strip() for line in content.splitlines() if line.strip()]
-        except Exception:
-            pass
-
+    if not os.path.exists(reason_file):
+        return ""
     try:
-        import subprocess
-        raw = subprocess.check_output(
-            ["git", "log", "-1", "--pretty=%s%n%b"],
-            text=True, stderr=subprocess.DEVNULL
-        ).strip()
-        lines = [l.strip("-•* ").strip() for l in raw.splitlines() if l.strip()]
-        cleaned = []
-        for line in lines:
-            for prefix in ["feat:", "fix:", "chore:", "refactor:", "perf:", "docs:", "style:", "test:"]:
-                if line.lower().startswith(prefix):
-                    line = line[len(prefix):].strip()
-                    break
-            if line and len(line) > 3 and not line.startswith("Co-authored-by:") and not line.startswith("Signed-off-by:"):
-                cleaned.append(line[0].upper() + line[1:])
-            if len(cleaned) >= 3:
-                break
-        if cleaned:
-            return cleaned
+        with open(reason_file, "r", encoding="utf-8") as f:
+            content = " ".join(line.strip("-•* ").strip() for line in f.read().splitlines() if line.strip())
+        os.remove(reason_file)
+        return content
     except Exception:
-        pass
-
-    return ["Bug fixes and performance improvements"]
+        return ""
 
 async def send_restart_notification(bot: Bot):
-    """Notifies owner and log channel upon startup with clean, non-technical layout and zero buttons."""
+    """Notifies owner and log channel upon startup with a clean status card and zero buttons."""
     if not OWNER_ID:
         return
 
-    reason_file = os.path.join(os.path.dirname(__file__), "restart_reason.txt")
-    has_reason = os.path.exists(reason_file)
+    reason = _consume_restart_reason()
 
-    current_commit = ""
-    try:
-        import subprocess
-        current_commit = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"],
-            text=True, stderr=subprocess.DEVNULL
-        ).strip()
-    except Exception:
-        pass
+    current_commit = os.getenv("RENDER_GIT_COMMIT", "").strip()
+    if not current_commit:
+        try:
+            import subprocess
+            current_commit = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                text=True, stderr=subprocess.DEVNULL
+            ).strip()
+        except Exception:
+            pass
 
     last_notified = await db.get_state("last_notified_commit")
 
     # If this is an automatic container reconnect/resume and no new commit was deployed, skip broadcast
-    if not has_reason and current_commit and last_notified == current_commit:
+    if not reason and current_commit and last_notified == current_commit:
         print("[restart] Container reconnected: commit already notified. Suppressing duplicate alert.")
         return
 
-    changes = get_latest_changes()
-    changes_formatted = "\n".join(f"• {html.escape(c)}" for c in changes)
     now_str = datetime.now(IST).strftime("%I:%M %p IST · %b %d")
-
-    content = (
-        f"<b>{BRAND_NAME} Online 🟢</b>\n\n"
-        "<b>Changes in this Update:</b>\n"
-        f"{changes_formatted}\n\n"
-        f"<b>Time:</b> <code>{now_str}</code>"
-    )
+    lines = [
+        f"<b>{BRAND_NAME} Online 🟢</b>",
+        "",
+        "<b>Status:</b> Running smoothly",
+    ]
+    if reason:
+        lines.append(f"<b>Note:</b> {html.escape(reason)}")
+    lines.append(f"<b>Time:</b> <code>{now_str}</code>")
+    content = "\n".join(lines)
 
     targets = [OWNER_ID]
     if LOG_CHANNEL_ID:
